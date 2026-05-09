@@ -402,7 +402,7 @@ final class AppState {
     func confirmCloseRunningTab() {
         guard let pending = pendingProcessTabClose else { return }
         pendingProcessTabClose = nil
-        closeTabWithLastCheck(pending.tabID, areaID: pending.areaID, projectID: pending.projectID)
+        closeTabWithLastCheckAfterCurrentPresentation(pending.tabID, areaID: pending.areaID, projectID: pending.projectID)
     }
 
     func cancelCloseRunningTab() {
@@ -412,7 +412,7 @@ final class AppState {
     func confirmCloseUnsavedEditorTab() {
         guard let pending = pendingUnsavedEditorTabClose else { return }
         pendingUnsavedEditorTabClose = nil
-        closeTabWithLastCheck(pending.tabID, areaID: pending.areaID, projectID: pending.projectID)
+        closeTabWithLastCheckAfterCurrentPresentation(pending.tabID, areaID: pending.areaID, projectID: pending.projectID)
     }
 
     func saveAndCloseUnsavedEditorTab() {
@@ -431,7 +431,7 @@ final class AppState {
         Task { [weak self] in
             do {
                 try await editorState.saveFileAsync()
-                self?.closeTabWithLastCheck(pending.tabID, areaID: pending.areaID, projectID: pending.projectID)
+                self?.closeTabWithLastCheckAfterCurrentPresentation(pending.tabID, areaID: pending.areaID, projectID: pending.projectID)
             } catch {
                 self?.pendingSaveErrorMessage = "Failed to save \(fileName): \(error.localizedDescription)"
             }
@@ -450,6 +450,12 @@ final class AppState {
             return
         }
         dispatch(.closeTab(projectID: projectID, areaID: areaID, tabID: tabID))
+    }
+
+    private func closeTabWithLastCheckAfterCurrentPresentation(_ tabID: UUID, areaID: UUID, projectID: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            self?.closeTabWithLastCheck(tabID, areaID: areaID, projectID: projectID)
+        }
     }
 
     func confirmCloseLastTab() {

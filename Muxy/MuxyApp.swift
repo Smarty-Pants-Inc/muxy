@@ -14,6 +14,7 @@ struct MuxyApp: App {
 
     init() {
         _ = MuxyApp.launchDate
+        MuxyLegacyMigration.runIfNeeded()
         let environment = AppEnvironment.live
         let projectStore = ProjectStore(persistence: environment.projectPersistence)
         let worktreeStore = WorktreeStore(
@@ -127,7 +128,7 @@ struct MuxyApp: App {
         }
         .defaultSize(width: 700, height: 600)
 
-        Window("Muxy Help", id: "help") {
+        Window("\(AppIdentity.displayName) Help", id: "help") {
             HelpView()
                 .preferredColorScheme(MuxyTheme.colorScheme)
         }
@@ -173,12 +174,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    nonisolated static func resolveProjectPath(from url: URL) -> String? {
+    nonisolated static func resolveProjectPath(
+        from url: URL,
+        acceptedSchemes: Set<String>? = nil
+    ) -> String? {
         if url.isFileURL {
             let standardized = url.standardizedFileURL.path
             return standardized.isEmpty || standardized == "/" ? nil : standardized
         }
-        guard url.scheme == "muxy" else { return nil }
+        guard (acceptedSchemes ?? Self.acceptedURLSchemes).contains(url.scheme ?? "") else { return nil }
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }
@@ -209,6 +213,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let standardized = URL(fileURLWithPath: resolved).standardizedFileURL.path
         guard !standardized.isEmpty, standardized != "/" else { return nil }
         return standardized
+    }
+
+    nonisolated private static var acceptedURLSchemes: Set<String> {
+        if AppIdentity.bundleIdentifier == AppIdentity.legacyBundleIdentifier {
+            return [AppIdentity.legacyURLScheme]
+        }
+        return [AppIdentity.urlScheme]
     }
 
     @MainActor
@@ -302,8 +313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard QuitConfirmationPreferences.confirmQuit else { return .terminateNow }
 
         let alert = NSAlert()
-        alert.messageText = "Quit Muxy?"
-        alert.informativeText = "Are you sure you want to quit Muxy?"
+        alert.messageText = "Quit \(AppIdentity.displayName)?"
+        alert.informativeText = "Are you sure you want to quit \(AppIdentity.displayName)?"
         alert.alertStyle = .warning
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "Quit")

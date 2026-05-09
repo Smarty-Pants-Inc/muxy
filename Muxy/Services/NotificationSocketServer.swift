@@ -13,7 +13,7 @@ final class NotificationSocketServer: @unchecked Sendable {
 
     static var socketPath: String {
         MuxyFileStorage.appSupportDirectory()
-            .appendingPathComponent("muxy.sock")
+            .appendingPathComponent(AppIdentity.socketName)
             .path
     }
 

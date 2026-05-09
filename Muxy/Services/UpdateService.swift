@@ -20,21 +20,8 @@ enum UpdateChannel: String, CaseIterable, Identifiable {
         }
     }
 
-    var feedURL: String {
-        switch self {
-        case .stable:
-            "https://github.com/muxy-app/muxy/releases/latest/download/appcast-\(Self.archSlug).xml"
-        case .beta:
-            "https://github.com/muxy-app/muxy/releases/download/beta-channel/appcast-beta-\(Self.archSlug).xml"
-        }
-    }
-
-    private static var archSlug: String {
-        #if arch(arm64)
-        "arm64"
-        #else
-        "x86_64"
-        #endif
+    var feedURL: String? {
+        AppIdentity.updateFeedURL(for: self)
     }
 }
 
@@ -56,6 +43,7 @@ final class UpdateService: NSObject {
             feedDelegate.channel = newValue
             UserDefaults.standard.set(newValue.rawValue, forKey: UpdateChannel.storageKey)
             availableUpdateVersion = nil
+            guard AppIdentity.updatesEnabled else { return }
             updater.checkForUpdatesInBackground()
         }
     }
@@ -83,6 +71,7 @@ final class UpdateService: NSObject {
     }
 
     func start() {
+        guard AppIdentity.updatesEnabled else { return }
         do {
             try updater.start()
         } catch {
@@ -91,6 +80,7 @@ final class UpdateService: NSObject {
     }
 
     func checkForUpdates() {
+        guard AppIdentity.updatesEnabled else { return }
         controller.checkForUpdates(nil)
     }
 

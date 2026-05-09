@@ -18,19 +18,21 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         SettingsContainer {
-            SettingsSection(
-                "Updates",
-                footer: "The Beta channel ships every change merged to main and may be unstable. "
-                    + "Switch back to Stable to receive only tagged releases."
-            ) {
-                SettingsRow("Update channel") {
-                    Picker("", selection: channelBinding) {
-                        ForEach(UpdateChannel.allCases) { channel in
-                            Text(channel.displayName).tag(channel)
+            if AppIdentity.updatesEnabled {
+                SettingsSection(
+                    "Updates",
+                    footer: "The Beta channel ships every change merged to main and may be unstable. "
+                        + "Switch back to Stable to receive only tagged releases."
+                ) {
+                    SettingsRow("Update channel") {
+                        Picker("", selection: channelBinding) {
+                            ForEach(UpdateChannel.allCases) { channel in
+                                Text(channel.displayName).tag(channel)
+                            }
                         }
+                        .labelsHidden()
+                        .frame(width: SettingsMetrics.controlWidth, alignment: .trailing)
                     }
-                    .labelsHidden()
-                    .frame(width: SettingsMetrics.controlWidth, alignment: .trailing)
                 }
             }
 
@@ -57,7 +59,7 @@ struct GeneralSettingsView: View {
 
             SettingsSection(
                 "Worktrees",
-                footer: "Muxy creates a project-named subfolder inside this folder. "
+                footer: "\(AppIdentity.displayName) creates a project-named subfolder inside this folder. "
                     + "Projects can still override this from the new worktree dialog."
             ) {
                 worktreeLocationControl
@@ -72,7 +74,7 @@ struct GeneralSettingsView: View {
 
             SettingsSection("Quit", showsDivider: sentry.hasDSN) {
                 SettingsToggleRow(
-                    label: "Confirm before quitting Muxy",
+                    label: "Confirm before quitting \(AppIdentity.displayName)",
                     isOn: $confirmQuit
                 )
             }
@@ -111,7 +113,7 @@ struct GeneralSettingsView: View {
     }
 
     private var defaultWorktreeLocationText: String {
-        defaultWorktreeParentPath.isEmpty ? "Muxy App Support" : defaultWorktreeParentPath
+        defaultWorktreeParentPath.isEmpty ? "\(AppIdentity.displayName) App Support" : defaultWorktreeParentPath
     }
 
     private var worktreeLocationControl: some View {

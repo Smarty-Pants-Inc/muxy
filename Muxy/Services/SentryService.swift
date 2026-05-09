@@ -97,7 +97,8 @@ final class SentryService {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     }
 
-    private static func environment(from defaults: UserDefaults) -> String {
+    static func environment(from defaults: UserDefaults, appEnvironment: String? = AppIdentity.sentryEnvironment) -> String {
+        if let appEnvironment { return appEnvironment }
         let channel = defaults.string(forKey: UpdateChannel.storageKey)
             .flatMap { UpdateChannel(rawValue: $0) } ?? .stable
         return channel == .beta ? "beta" : "production"

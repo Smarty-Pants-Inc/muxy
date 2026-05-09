@@ -112,6 +112,20 @@ struct SentryServiceTests {
         #expect(capturedEnvironments == ["beta"])
     }
 
+
+    @Test("explicit app environment overrides update channel")
+    func explicitAppEnvironmentWins() {
+        let suiteName = "muxy.tests.sentry.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(UpdateChannel.beta.rawValue, forKey: UpdateChannel.storageKey)
+
+        #expect(SentryService.environment(from: defaults, appEnvironment: "smarty-code-dev") == "smarty-code-dev")
+    }
+
     private func makeService(
         dsn: String?,
         starter: @escaping (SentryStartContext) -> Void = { _ in },

@@ -9,6 +9,8 @@ Requires `swiftlint` and `swiftformat` (`brew install swiftlint swiftformat`).
 ```bash
 scripts/checks.sh        # Run all checks (formatting, linting, build)
 scripts/checks.sh --fix  # Auto-fix formatting and linting issues
+scripts/build-smarty-code.sh --channel stable  # Build the stable Smarty Code app bundle
+scripts/build-smarty-code.sh --channel dev     # Build the dev Smarty Code app bundle
 swiftformat --lint .      # Check formatting only
 swiftlint lint --strict   # Check linting only
 ```

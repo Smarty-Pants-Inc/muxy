@@ -1,12 +1,17 @@
 #!/bin/bash
-# Muxy CLI wrapper - Usage: muxy /path/to/project
-# Opens a folder in Muxy app
+set -euo pipefail
 
-TARGET_DIR="$1"
+APP_NAME="Muxy"
+CLI_COMMAND="muxy"
+URL_SCHEME="muxy"
+BUNDLE_ID="com.muxy.app"
+APP_SUPPORT_NAME="Muxy"
+SOCKET_NAME="muxy.sock"
+TARGET_DIR="${1:-}"
 
 if [ -z "$TARGET_DIR" ]; then
-    echo "Usage: muxy <path>"
-    echo "       muxy ."
+    echo "Usage: ${CLI_COMMAND} <path>"
+    echo "       ${CLI_COMMAND} ."
     exit 1
 fi
 
@@ -33,12 +38,15 @@ percent_encode() {
 }
 
 ENCODED_PATH="$(percent_encode "$TARGET_DIR")"
+SOCKET="$HOME/Library/Application Support/${APP_SUPPORT_NAME}/${SOCKET_NAME}"
 
-open "muxy://open?path=${ENCODED_PATH}" 2>/dev/null \
-    || open -b com.muxy.app "$TARGET_DIR" 2>/dev/null \
+open "${URL_SCHEME}://open?path=${ENCODED_PATH}" 2>/dev/null \
+    || open -b "$BUNDLE_ID" "$TARGET_DIR" 2>/dev/null \
     || {
-        SOCKET="$HOME/Library/Application Support/Muxy/muxy.sock"
         if [ -e "$SOCKET" ]; then
             printf 'open-project|%s\n' "$TARGET_DIR" | nc -U "$SOCKET" 2>/dev/null
+        else
+            echo "Error: ${APP_NAME} is not running and socket was not found: ${SOCKET}" >&2
+            exit 1
         fi
     }

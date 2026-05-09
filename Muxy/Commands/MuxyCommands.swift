@@ -418,7 +418,7 @@ struct MuxyCommands: Commands {
         }
 
         CommandGroup(replacing: .help) {
-            Button("Muxy Help") {
+            Button("\(AppIdentity.displayName) Help") {
                 openHelpWindow()
             }
 

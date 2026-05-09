@@ -78,6 +78,17 @@ swift build               # debug build
 swift run Muxy             # run
 ```
 
+## Smarty Code App Builds
+
+This fork can build isolated Smarty Code channels without sharing the production Muxy bundle id or state directory:
+
+```bash
+scripts/build-smarty-code.sh --channel stable  # Smarty Code.app
+scripts/build-smarty-code.sh --channel dev     # Smarty Code Dev.app
+```
+
+Use `--install` to copy a built app into `/Applications`. The installer refuses to overwrite a running channel unless `--quit-running` is passed intentionally.
+
 ## License
 
 [MIT](LICENSE)

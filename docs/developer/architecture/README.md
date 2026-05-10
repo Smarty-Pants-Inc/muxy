@@ -47,6 +47,7 @@ flowchart TB
 | [Notifications](notifications.md) | Sources, routing, click-to-navigate |
 | [UI Scaling](ui-scaling.md) | Centralized chrome metrics with user-adjustable scale |
 | [AI Usage](ai-usage.md) | Provider registry, credentials, refresh lifecycle |
+| [Smarty Agent Navigation and CLIProxyAPI Usage Roadmap](smarty-agent-navigation-and-cliproxyapi-usage-roadmap.md) | Milestone plan for agent session trees and proxy-native usage intelligence |
 | [Remote Server](remote-server.md) | WebSocket server, terminal streaming, pairing |
 | [CLI & URL Scheme](cli-and-url-scheme.md) | `muxy` wrapper, `muxy://` URL, socket entry |
 | [Updates](updates.md) | Sparkle channels and release flow |

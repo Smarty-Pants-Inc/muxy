@@ -60,6 +60,7 @@ final class AIProviderRegistry {
     lazy var usageProviders: [any AIUsageProvider] = [
         claudeCodeProvider,
         CodexUsageProvider(),
+        CLIProxyUsageProvider(),
         CopilotUsageProvider(),
         CursorUsageProvider(),
         AmpUsageProvider(),

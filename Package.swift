@@ -63,6 +63,7 @@ let package = Package(
                 .linkedFramework("Metal"),
                 .linkedFramework("MetalKit"),
                 .linkedFramework("QuartzCore"),
+                .linkedFramework("UserNotifications"),
                 .linkedLibrary("c++"),
             ]
         ),
@@ -88,6 +89,7 @@ let package = Package(
                 .linkedFramework("Metal"),
                 .linkedFramework("MetalKit"),
                 .linkedFramework("QuartzCore"),
+                .linkedFramework("UserNotifications"),
                 .linkedLibrary("c++"),
             ]
         ),

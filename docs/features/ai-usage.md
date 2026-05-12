@@ -17,7 +17,7 @@ Tracking is **read-only** — Muxy reads tokens you've already configured for ea
 
 ## Supported providers
 
-Claude Code · GitHub Copilot · OpenAI Codex CLI · Cursor CLI · Amp · Z.ai · MiniMax · Kimi · Factory.
+Claude Code · OpenAI Codex CLI · CLIProxyAPI · GitHub Copilot · Cursor CLI · Amp · Z.ai · MiniMax · Kimi · Factory.
 
 Enable / disable each in **Settings → AI Usage**.
 
@@ -41,6 +41,19 @@ Toggle **Show Secondary Limits** in settings to keep the popover compact.
 | macOS Keychain | via `/usr/bin/security find-generic-password` |
 
 For providers that need OAuth refresh (Claude Code, Factory, Kimi), Muxy refreshes tokens silently before fetching usage.
+
+## CLIProxyAPI native view
+
+When a local CLIProxyAPI-compatible proxy is enabled as a provider, the popover adds a native local-only section. It probes local endpoints such as `127.0.0.1:8317` plus local Codex config, then shows only the metrics supported by the detected backend:
+
+- overview cards for rolling tokens, accounts, capacity, and model count;
+- account rows with status, quota/headroom, active sessions, last-used time, recent failure, and runway when available;
+- token/request velocity for rolling windows, including a compact textual sparkline when history exists;
+- refill timeline rows when quota reset windows are known;
+- hot sessions by recent token usage, with context-bloat signals and confirmed/suggested agent attribution when local agent registry labels match request session IDs;
+- model mix with prompt/completion split, cache read/write tokens, cache preservation score, latency, and estimated cost when available.
+
+The preferred stats source is Smarty Code's local collector: when a local CLIProxyAPI management key is explicitly configured, it reads CLIProxyAPI's Redis-compatible usage queue and persists normalized events into app-owned SQLite for rolling history. The stock CLIProxyAPI 6.10.x Homebrew build no longer ships built-in persisted usage statistics, so if the proxy is reachable but no collector/dashboard/built-in stats source is available, velocity/history cards say why they are unavailable instead of showing fake zeroes. The panel also reports which local snapshot endpoints were probed, backs off after wrong-key management failures, and leaves management endpoints unprobed unless a local management key is configured. Sensitive values such as API keys, account emails, bearer tokens, and URL credentials are redacted before display.
 
 ## Auto-refresh
 

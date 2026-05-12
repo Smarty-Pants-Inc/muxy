@@ -100,27 +100,19 @@ struct CLIProxyUsageProvider: AIUsageProvider {
                     periodDuration: 3600
                 )
             )
+            if let cost = hour.costEstimateUSD {
+                rows.append(
+                    AIUsageMetricRow(
+                        label: "Estimated cost",
+                        percent: nil,
+                        resetDate: nil,
+                        detail: "~\(AIUsageParserSupport.formatNumber(cost)) USD",
+                        periodDuration: 3600
+                    )
+                )
+            }
         }
 
-        if let warning = snapshot.warnings.first {
-            rows.append(
-                AIUsageMetricRow(
-                    label: "Session diagnostics",
-                    percent: nil,
-                    resetDate: nil,
-                    detail: warning.message
-                )
-            )
-        } else {
-            rows.append(
-                AIUsageMetricRow(
-                    label: "Session diagnostics",
-                    percent: nil,
-                    resetDate: nil,
-                    detail: "\(snapshot.statsBackend.displayName) detected"
-                )
-            )
-        }
         return rows
     }
 

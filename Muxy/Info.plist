@@ -34,6 +34,8 @@
 	<string>__MUXY_SENTRY_DSN__</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>A process running in Muxy's terminal would like to use AppleScript.</string>
+	<key>NSAppDataUsageDescription</key>
+	<string>A process running in Muxy's terminal would like to access data from another app.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>A process running in Muxy's terminal would like to use Bluetooth.</string>
 	<key>NSCalendarsUsageDescription</key>
@@ -42,6 +44,12 @@
 	<string>A process running in Muxy's terminal would like to use the camera.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>A process running in Muxy's terminal would like to access your contacts.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>A process running in Muxy's terminal would like to access your Desktop folder.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>A process running in Muxy's terminal would like to access your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>A process running in Muxy's terminal would like to access your Downloads folder.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>A process running in Muxy's terminal would like to access the local network.</string>
 	<key>NSLocationUsageDescription</key>
@@ -50,10 +58,14 @@
 	<string>A process running in Muxy's terminal would like to use your microphone.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>A process running in Muxy's terminal would like to access motion data.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>A process running in Muxy's terminal would like to access network volumes.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>A process running in Muxy's terminal would like to access your photo library.</string>
 	<key>NSRemindersUsageDescription</key>
 	<string>A process running in Muxy's terminal would like to access your reminders.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>A process running in Muxy's terminal would like to access removable volumes.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>A process running in Muxy's terminal would like to use speech recognition.</string>
 	<key>NSSystemAdministrationUsageDescription</key>

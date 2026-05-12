@@ -8,15 +8,27 @@ enum MainWindowLayout {
         isFullScreen: Bool
     ) -> CGFloat {
         guard sidebarWidth > 0 else { return 0 }
-        guard !isFullScreen else { return sidebarWidth }
-        return max(sidebarWidth, titleBarNavigationWidth)
+        _ = titleBarNavigationWidth
+        _ = isFullScreen
+        return sidebarWidth
     }
 
-    static func needsMainTitleBarNavigationInset(
+    static func titleBarNavigationOverlayWidth(
         leftNavigationWidth: CGFloat,
+        titleBarNavigationWidth: CGFloat,
         isFullScreen: Bool
-    ) -> Bool {
-        !isFullScreen && leftNavigationWidth == 0
+    ) -> CGFloat {
+        guard !isFullScreen else { return 0 }
+        return max(leftNavigationWidth, titleBarNavigationWidth)
+    }
+
+    static func mainTitleBarLeadingInset(
+        leftNavigationWidth: CGFloat,
+        titleBarNavigationOverlayWidth: CGFloat,
+        isFullScreen: Bool
+    ) -> CGFloat {
+        guard !isFullScreen else { return 0 }
+        return max(0, titleBarNavigationOverlayWidth - leftNavigationWidth)
     }
 }
 
@@ -100,7 +112,7 @@ struct MainWindow: View {
     @State private var showWorktreeSwitcher = false
     @State private var overlayAnimatingOut = false
     @State private var isFullScreen = false
-    @AppStorage("muxy.sidebarExpanded") private var sidebarExpanded = false
+    @State private var sidebarExpanded = UserDefaults.standard.bool(forKey: "muxy.sidebarExpanded")
     @AppStorage(SidebarCollapsedStyle.storageKey) private var sidebarCollapsedStyleRaw = SidebarCollapsedStyle.defaultValue.rawValue
     @AppStorage(SidebarExpandedStyle.storageKey) private var sidebarExpandedStyleRaw = SidebarExpandedStyle.defaultValue.rawValue
     @AppStorage("muxy.notifications.toastPosition") private var toastPositionRaw = ToastPosition.topCenter.rawValue
@@ -110,6 +122,10 @@ struct MainWindow: View {
         HStack(spacing: 0) {
             leftNavigationColumn
             mainWorkspaceColumn
+        }
+        .animation(.easeInOut(duration: 0.2), value: sidebarExpanded)
+        .overlay(alignment: .topLeading) {
+            titleBarNavigationOverlay
         }
         .environment(\.overlayActive, showQuickOpen || showFindInFiles || showWorktreeSwitcher || overlayAnimatingOut)
         .overlay(alignment: toastAlignment) {
@@ -213,6 +229,7 @@ struct MainWindow: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 sidebarExpanded.toggle()
             }
+            UserDefaults.standard.set(sidebarExpanded, forKey: "muxy.sidebarExpanded")
         }
         .onReceive(NotificationCenter.default.publisher(for: .windowFullScreenDidChange)) { notification in
             isFullScreen = notification.userInfo?["isFullScreen"] as? Bool ?? false
@@ -260,33 +277,32 @@ struct MainWindow: View {
         .modifier(SentryConsentPrompter())
     }
 
-    @ViewBuilder
     private var leftNavigationColumn: some View {
-        if leftNavigationWidth > 0 {
-            HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    if !isFullScreen {
-                        Color.clear
-                            .frame(height: UIMetrics.scaled(32))
-                            .overlay(alignment: .trailing) {
-                                navigationArrows
-                            }
-                            .background(WindowDragRepresentable())
+        VStack(spacing: 0) {
+            if !isFullScreen {
+                Color.clear
+                    .frame(height: UIMetrics.scaled(32))
+                    .background(WindowDragRepresentable())
 
-                        Rectangle().fill(MuxyTheme.border).frame(height: 1)
-                            .accessibilityHidden(true)
-                    }
-
-                    Sidebar(expanded: sidebarExpanded)
-                }
-                .frame(width: leftNavigationWidth, alignment: .leading)
-                .background(MuxyTheme.bg)
-
-                Rectangle().fill(MuxyTheme.border).frame(width: 1)
+                Rectangle().fill(MuxyTheme.border).frame(height: 1)
                     .accessibilityHidden(true)
             }
-            .fixedSize(horizontal: true, vertical: false)
+
+            Sidebar(expanded: sidebarExpanded)
         }
+        .frame(width: leftNavigationWidth, alignment: .leading)
+        .clipped()
+        .background(MuxyTheme.bg)
+        .overlay(alignment: .trailing) {
+            if leftNavigationWidth > 0 {
+                Rectangle().fill(MuxyTheme.border)
+                    .frame(width: 1)
+                    .padding(.top, leftNavigationBorderTopPadding)
+                    .accessibilityHidden(true)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .animation(.easeInOut(duration: 0.2), value: leftNavigationWidth)
     }
 
     private var mainWorkspaceColumn: some View {
@@ -306,20 +322,38 @@ struct MainWindow: View {
 
     private var mainTitleBarContent: some View {
         HStack(spacing: 0) {
-            if needsMainTitleBarNavigationInset {
+            if mainTitleBarLeadingInset > 0 {
                 Color.clear
-                    .frame(width: titleBarNavigationWidth)
+                    .frame(width: mainTitleBarLeadingInset)
                     .fixedSize(horizontal: true, vertical: false)
-                    .overlay(alignment: .trailing) {
-                        HStack(spacing: 0) {
-                            navigationArrows
-                            Rectangle().fill(MuxyTheme.border).frame(width: 1)
-                        }
-                    }
             }
 
             topBarContent
         }
+        .animation(.easeInOut(duration: 0.2), value: mainTitleBarLeadingInset)
+    }
+
+    private var titleBarNavigationOverlay: some View {
+        Group {
+            if !isFullScreen {
+                Color.clear
+                    .frame(width: titleBarNavigationOverlayWidth, height: UIMetrics.scaled(32))
+                    .fixedSize(horizontal: true, vertical: false)
+                    .background(WindowDragRepresentable())
+                    .background(MuxyTheme.bg)
+                    .overlay(alignment: .trailing) {
+                        HStack(spacing: 0) {
+                            navigationArrows
+                            if titleBarNavigationOverflowsSidebar {
+                                Rectangle().fill(MuxyTheme.border).frame(width: 1)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                    }
+                    .zIndex(1)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: titleBarNavigationOverlayWidth)
     }
 
     private var workspaceContent: some View {
@@ -688,11 +722,28 @@ struct MainWindow: View {
         )
     }
 
-    private var needsMainTitleBarNavigationInset: Bool {
-        MainWindowLayout.needsMainTitleBarNavigationInset(
+    private var titleBarNavigationOverlayWidth: CGFloat {
+        MainWindowLayout.titleBarNavigationOverlayWidth(
             leftNavigationWidth: leftNavigationWidth,
+            titleBarNavigationWidth: titleBarNavigationWidth,
             isFullScreen: isFullScreen
         )
+    }
+
+    private var mainTitleBarLeadingInset: CGFloat {
+        MainWindowLayout.mainTitleBarLeadingInset(
+            leftNavigationWidth: leftNavigationWidth,
+            titleBarNavigationOverlayWidth: titleBarNavigationOverlayWidth,
+            isFullScreen: isFullScreen
+        )
+    }
+
+    private var titleBarNavigationOverflowsSidebar: Bool {
+        titleBarNavigationOverlayWidth > leftNavigationWidth
+    }
+
+    private var leftNavigationBorderTopPadding: CGFloat {
+        titleBarNavigationOverflowsSidebar ? UIMetrics.scaled(33) : 0
     }
 
     private var titleBarNavigationWidth: CGFloat {

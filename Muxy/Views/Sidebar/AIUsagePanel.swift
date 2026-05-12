@@ -61,6 +61,7 @@ struct AIUsagePreviewButton: View {
 
 struct AIUsagePanel: View {
     let snapshots: [AIProviderUsageSnapshot]
+    let cliProxySnapshot: CLIProxyUsageSnapshot?
     let isRefreshing: Bool
     let lastRefreshDate: Date?
     let onRefresh: () -> Void
@@ -104,7 +105,7 @@ struct AIUsagePanel: View {
                 }
             }
 
-            if snapshots.isEmpty {
+            if snapshots.isEmpty, cliProxySnapshot == nil {
                 Text(isRefreshing ? "Refreshing usage data..." : "No usage data yet.")
                     .font(.system(size: UIMetrics.fontBody))
                     .foregroundStyle(MuxyTheme.fgDim)
@@ -116,6 +117,10 @@ struct AIUsagePanel: View {
                         AIProviderUsageView(snapshot: snapshot)
                     }
                 }
+            }
+
+            if let cliProxySnapshot {
+                CLIProxyUsageSection(snapshot: cliProxySnapshot)
             }
         }
         .padding(.horizontal, UIMetrics.spacing6)

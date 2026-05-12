@@ -14,7 +14,8 @@ flowchart TB
 
 ## Requirements
 
-- macOS 14 or newer (Apple Silicon or Intel)
+- macOS 14 or newer
+- Smarty Code fork builds are Apple Silicon-only
 
 ## Install
 

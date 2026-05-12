@@ -10,6 +10,8 @@ enum CLIProxyUsageRedactor {
             with: "$1[REDACTED]"
         )
         value = replace(#"(?i)([?&](?:api[_-]?key|token|secret|password|key)=)[^&\s]+"#, in: value, with: "$1[REDACTED]")
+        value = replace(#"(?i)\b(?:secret|token|password|authorization)[A-Za-z0-9._\-+/=]{8,}\b"#, in: value, with: "[REDACTED]")
+        value = replace(#"\bsk-(?:proj-|ant-api03-)?[A-Za-z0-9][A-Za-z0-9_\-]{15,}\b"#, in: value, with: "[REDACTED]")
         value = replace(#"(?i)://[^/@\s]+@"#, in: value, with: "://[REDACTED]@")
         value = replace(#"(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}"#, in: value, with: "[REDACTED_EMAIL]")
         return value

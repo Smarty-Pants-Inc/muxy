@@ -30,7 +30,7 @@
 - **Quick open & command palette** — Fuzzy-find files and run commands without leaving the keyboard
 - **Text editor** — Native lightweight editor with syntax highlighting for most languages, search, and history
 - **Markdown preview** — Render Markdown files inline
-- **AI usage tracking** — Live token/cost usage panels for Claude Code, Codex, Cursor, Copilot, Amp, Factory, Kimi, MiniMax, OpenCode, and Z.ai
+- **AI usage tracking** — Live token/cost usage panels for Claude Code, Codex, CLIProxyAPI, Cursor, Copilot, Amp, Factory, Kimi, MiniMax, OpenCode, and Z.ai
 - **IDE integration** — Open files and folders in your preferred IDE directly from Muxy
 - **Mobile companion apps** — Pair iOS and Android devices to control your Mac terminals remotely
 - **Rich input panel** — Compose multi-line input with image attachments and drafts before sending to the terminal
@@ -86,6 +86,10 @@ This fork can build isolated Smarty Code channels without sharing the production
 scripts/build-smarty-code.sh --channel stable  # Smarty Code.app
 scripts/build-smarty-code.sh --channel dev     # Smarty Code Dev.app
 ```
+
+Smarty Code app bundles are Apple Silicon-only. Build them as `arm64` only;
+do not build Intel, `x86_64`, Rosetta, or universal Smarty Code bundles. The
+build script thins bundled framework/helper binaries to arm64 before signing.
 
 Use `--install` to copy a built app into `/Applications`. The installer refuses to overwrite a running channel unless `--quit-running` is passed intentionally.
 

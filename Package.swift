@@ -64,6 +64,7 @@ let package = Package(
                 .linkedFramework("MetalKit"),
                 .linkedFramework("QuartzCore"),
                 .linkedLibrary("c++"),
+                .linkedLibrary("sqlite3"),
             ]
         ),
         .testTarget(
@@ -89,6 +90,7 @@ let package = Package(
                 .linkedFramework("MetalKit"),
                 .linkedFramework("QuartzCore"),
                 .linkedLibrary("c++"),
+                .linkedLibrary("sqlite3"),
             ]
         ),
     ]

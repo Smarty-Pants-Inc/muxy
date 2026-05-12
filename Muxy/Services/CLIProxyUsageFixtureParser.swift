@@ -19,17 +19,17 @@ enum CLIProxyUsageFixtureParser {
         let windows = statsBackend.hasUsageHistory ? CLIProxyUsageMetricsCalculator.rollingWindows(events: events, now: now) : []
         let velocities = statsBackend.hasUsageHistory ? CLIProxyUsageMetricsCalculator.velocities(for: windows) : []
         let models = modelUsage(fixtureModels: fixture.models ?? [], events: events)
+        let sessions = statsBackend.hasUsageHistory ? CLIProxyUsageMetricsCalculator.sessionUsage(events: events) : []
         let accounts = accountUsage(fixtureAccounts: fixture.accounts ?? [], events: events, now: now)
         let warnings = buildWarnings(fixture: fixture, statsBackend: statsBackend)
-        let missingCapabilities = missingCapabilities(
+        let missingCapabilities = missingCapabilities(CapabilityInput(
             reachable: fixture.reachable ?? true,
             statsBackend: statsBackend,
-            accounts: accounts
-        )
-        let diagnostics = (fixture.diagnostics ?? []).map { diagnostic in
-            CLIProxyUsageDiagnostic(label: diagnostic.label, value: diagnostic.value)
-        }
-
+            accounts: accounts,
+            models: models,
+            sessions: sessions,
+            windows: windows
+        ))
         return CLIProxyUsageSnapshot(
             fetchedAt: fetchedAt,
             baseURL: baseURL,
@@ -38,10 +38,10 @@ enum CLIProxyUsageFixtureParser {
             statsBackend: statsBackend,
             accounts: accounts,
             models: models,
+            sessions: sessions,
             windows: windows,
             velocities: velocities,
             warnings: warnings,
-            diagnostics: diagnostics,
             missingCapabilities: missingCapabilities
         )
     }
@@ -55,7 +55,16 @@ enum CLIProxyUsageFixtureParser {
             .keys
             .sorted()
             .map { accountID in
-                Account(id: accountID, displayName: nil, providerKind: nil, status: nil, activeSessionCount: nil, quota: nil)
+                Account(
+                    id: accountID,
+                    displayName: nil,
+                    providerKind: nil,
+                    status: nil,
+                    activeSessionCount: nil,
+                    quota: nil,
+                    lastUsedAt: nil,
+                    recentFailure: nil
+                )
             }
         let mergedAccounts = mergeAccounts(fixtureAccounts + accountsFromEvents)
 
@@ -71,6 +80,8 @@ enum CLIProxyUsageFixtureParser {
                 status: account.status ?? .unknown,
                 activeSessionCount: account.activeSessionCount,
                 quota: account.quota,
+                lastUsedAt: account.lastUsedAt ?? accountEvents.map(\.timestamp).max(),
+                recentFailure: account.recentFailure ?? latestFailure(from: accountEvents),
                 recent: accountWindows,
                 capacity: nil
             )
@@ -86,6 +97,8 @@ enum CLIProxyUsageFixtureParser {
                 status: base.status,
                 activeSessionCount: base.activeSessionCount,
                 quota: base.quota,
+                lastUsedAt: base.lastUsedAt,
+                recentFailure: base.recentFailure,
                 recent: base.recent,
                 capacity: capacity
             )
@@ -96,7 +109,7 @@ enum CLIProxyUsageFixtureParser {
     private static func modelUsage(fixtureModels: [Model], events: [CLIProxyUsageEvent]) -> [CLIProxyModelUsage] {
         let calculated = CLIProxyUsageMetricsCalculator.modelUsage(events: events)
         guard !calculated.isEmpty else {
-            return fixtureModels.map(\.usage).sorted { $0.totalTokens > $1.totalTokens }
+            return fixtureModels.filter(\.hasUsageInputs).map(\.usage).sorted { $0.totalTokens > $1.totalTokens }
         }
         return calculated
     }
@@ -104,6 +117,15 @@ enum CLIProxyUsageFixtureParser {
     private static func windowsForAccount(events: [CLIProxyUsageEvent], now: Date) -> [CLIProxyUsageWindow] {
         guard !events.isEmpty else { return [] }
         return CLIProxyUsageMetricsCalculator.rollingWindows(events: events, now: now)
+    }
+
+    private static func latestFailure(from events: [CLIProxyUsageEvent]) -> CLIProxyUsageFailure? {
+        events
+            .filter { $0.errorCode != nil }
+            .max { $0.timestamp < $1.timestamp }
+            .flatMap { event in
+                event.errorCode.map { CLIProxyUsageFailure(occurredAt: event.timestamp, message: $0) }
+            }
     }
 
     private static func buildWarnings(fixture: Fixture, statsBackend: CLIProxyStatsBackend) -> [CLIProxyUsageWarning] {
@@ -130,31 +152,74 @@ enum CLIProxyUsageFixtureParser {
         return warnings
     }
 
-    private static func missingCapabilities(
-        reachable: Bool,
-        statsBackend: CLIProxyStatsBackend,
-        accounts: [CLIProxyAccountUsage]
-    ) -> [CLIProxyMissingCapability] {
+    private static func missingCapabilities(_ input: CapabilityInput) -> [CLIProxyMissingCapability] {
         var missing: [CLIProxyMissingCapability] = []
-        if !reachable {
+        if !input.reachable {
             missing.append(CLIProxyMissingCapability(
                 id: "proxy",
                 capability: "Proxy reachability",
                 reason: "No local CLIProxyAPI-compatible endpoint responded"
             ))
         }
-        if !statsBackend.hasUsageHistory {
+        if !input.statsBackend.hasUsageHistory {
             missing.append(CLIProxyMissingCapability(
                 id: "usage-history",
                 capability: "Usage history",
-                reason: "No usage queue, collector, dashboard, or built-in stats source was detected"
+                reason: "No Redis-queue collector, app-owned SQLite snapshot endpoint, dashboard, or built-in stats source was detected"
             ))
         }
-        if accounts.allSatisfy({ $0.quota == nil }) {
+        if input.accounts.allSatisfy({ $0.quota == nil }) {
             missing.append(CLIProxyMissingCapability(
                 id: "quota",
                 capability: "Quota windows",
                 reason: "Detected stats do not include account quota or reset-window data"
+            ))
+        }
+        guard input.statsBackend.hasUsageHistory else { return missing }
+        if input.models.allSatisfy({ $0.cacheReadTokens == nil && $0.cacheWriteTokens == nil }),
+           input.windows.allSatisfy({ $0.cacheReadTokens == nil && $0.cacheWriteTokens == nil })
+        {
+            missing.append(CLIProxyMissingCapability(
+                id: "cache-tokens",
+                capability: "Cache token metrics",
+                reason: "Detected stats do not include cache read/write token counts"
+            ))
+        }
+        if input.models.allSatisfy({ $0.costEstimateUSD == nil }),
+           input.windows.allSatisfy({ $0.costEstimateUSD == nil })
+        {
+            missing.append(CLIProxyMissingCapability(
+                id: "cost-estimates",
+                capability: "Cost estimates",
+                reason: "Detected stats do not include cost estimates"
+            ))
+        }
+        if input.models.allSatisfy({ $0.averageLatencyMS == nil }) {
+            missing.append(CLIProxyMissingCapability(
+                id: "latency",
+                capability: "Latency metrics",
+                reason: "Detected stats do not include request latency"
+            ))
+        }
+        if input.models.allSatisfy({ $0.averageTimeToFirstTokenMS == nil }) {
+            missing.append(CLIProxyMissingCapability(
+                id: "time-to-first-token",
+                capability: "Time to first token",
+                reason: "Detected stats do not include first-token timing"
+            ))
+        }
+        if input.models.allSatisfy({ $0.generationTokensPerSecond == nil }) {
+            missing.append(CLIProxyMissingCapability(
+                id: "generation-throughput",
+                capability: "Generation throughput",
+                reason: "Detected stats do not include generation duration"
+            ))
+        }
+        if input.sessions.isEmpty {
+            missing.append(CLIProxyMissingCapability(
+                id: "agent-attribution",
+                capability: "Agent attribution",
+                reason: "Detected stats do not include request session identifiers to join with agent registry labels"
             ))
         }
         return missing
@@ -171,7 +236,9 @@ enum CLIProxyUsageFixtureParser {
                     providerKind: account.providerKind,
                     status: account.status,
                     activeSessionCount: account.activeSessionCount,
-                    quota: account.quota
+                    quota: account.quota,
+                    lastUsedAt: account.lastUsedAt,
+                    recentFailure: account.recentFailure
                 )
             }
         }
@@ -204,7 +271,15 @@ enum CLIProxyUsageFixtureParser {
         let models: [Model]?
         let events: [Event]?
         let warnings: [Warning]?
-        let diagnostics: [Diagnostic]?
+    }
+
+    private struct CapabilityInput {
+        let reachable: Bool
+        let statsBackend: CLIProxyStatsBackend
+        let accounts: [CLIProxyAccountUsage]
+        let models: [CLIProxyModelUsage]
+        let sessions: [CLIProxySessionUsage]
+        let windows: [CLIProxyUsageWindow]
     }
 
     private struct Account: Decodable {
@@ -214,6 +289,8 @@ enum CLIProxyUsageFixtureParser {
         let status: CLIProxyAccountStatus?
         let activeSessionCount: Int?
         let quota: CLIProxyQuotaWindow?
+        let lastUsedAt: Date?
+        let recentFailure: CLIProxyUsageFailure?
     }
 
     private struct Model: Decodable {
@@ -224,6 +301,25 @@ enum CLIProxyUsageFixtureParser {
         let requestCount: Int?
         let errorCount: Int?
         let averageLatencyMS: Double?
+        let averageTimeToFirstTokenMS: Double?
+        let generationTokensPerSecond: Double?
+        let cacheReadTokens: Int?
+        let cacheWriteTokens: Int?
+        let costEstimateUSD: Double?
+
+        var hasUsageInputs: Bool {
+            promptTokens != nil
+                || completionTokens != nil
+                || totalTokens != nil
+                || requestCount != nil
+                || errorCount != nil
+                || averageLatencyMS != nil
+                || averageTimeToFirstTokenMS != nil
+                || generationTokensPerSecond != nil
+                || cacheReadTokens != nil
+                || cacheWriteTokens != nil
+                || costEstimateUSD != nil
+        }
 
         var usage: CLIProxyModelUsage {
             CLIProxyModelUsage(
@@ -234,7 +330,12 @@ enum CLIProxyUsageFixtureParser {
                 totalTokens: max(0, totalTokens ?? (promptTokens ?? 0) + (completionTokens ?? 0)),
                 requestCount: max(0, requestCount ?? 0),
                 errorCount: max(0, errorCount ?? 0),
-                averageLatencyMS: averageLatencyMS
+                averageLatencyMS: averageLatencyMS,
+                averageTimeToFirstTokenMS: averageTimeToFirstTokenMS,
+                generationTokensPerSecond: generationTokensPerSecond,
+                cacheReadTokens: cacheReadTokens.map { max(0, $0) },
+                cacheWriteTokens: cacheWriteTokens.map { max(0, $0) },
+                costEstimateUSD: costEstimateUSD.map { max(0, $0) }
             )
         }
     }
@@ -253,7 +354,10 @@ enum CLIProxyUsageFixtureParser {
         let cacheReadTokens: Int?
         let cacheWriteTokens: Int?
         let latencyMS: Int?
+        let timeToFirstTokenMS: Int?
+        let generationDurationMS: Int?
         let errorCode: String?
+        let costEstimateUSD: Double?
 
         var event: CLIProxyUsageEvent {
             let safeAccountID = CLIProxyUsageRedactor.safeIdentifier(accountID, prefix: "acct")
@@ -272,7 +376,10 @@ enum CLIProxyUsageFixtureParser {
                 cacheReadTokens: cacheReadTokens,
                 cacheWriteTokens: cacheWriteTokens,
                 latencyMS: latencyMS,
-                errorCode: errorCode.map(CLIProxyUsageRedactor.redact)
+                timeToFirstTokenMS: timeToFirstTokenMS,
+                generationDurationMS: generationDurationMS,
+                errorCode: errorCode.map(CLIProxyUsageRedactor.redact),
+                costEstimateUSD: costEstimateUSD
             )
         }
     }
@@ -281,10 +388,5 @@ enum CLIProxyUsageFixtureParser {
         let id: String?
         let severity: CLIProxyUsageWarningSeverity?
         let message: String
-    }
-
-    private struct Diagnostic: Decodable {
-        let label: String
-        let value: String
     }
 }

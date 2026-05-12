@@ -72,6 +72,13 @@ enum CLIProxyUsageMetricsCalculator {
             } else {
                 Double(latencyValues.reduce(0, +)) / Double(latencyValues.count)
             }
+            let timeToFirstTokenValues = events.compactMap(\.countedTimeToFirstTokenMS)
+            let averageTimeToFirstToken: Double? = if timeToFirstTokenValues.isEmpty {
+                nil
+            } else {
+                Double(timeToFirstTokenValues.reduce(0, +)) / Double(timeToFirstTokenValues.count)
+            }
+            let generationThroughput = generationTokensPerSecond(events: events)
             return CLIProxyModelUsage(
                 id: model,
                 model: CLIProxyUsageRedactor.redact(model),
@@ -80,10 +87,44 @@ enum CLIProxyUsageMetricsCalculator {
                 totalTokens: events.reduce(0) { $0 + ($1.countedTotalTokens ?? 0) },
                 requestCount: events.count,
                 errorCount: events.count(where: { $0.errorCode != nil }),
-                averageLatencyMS: averageLatency
+                averageLatencyMS: averageLatency,
+                averageTimeToFirstTokenMS: averageTimeToFirstToken,
+                generationTokensPerSecond: generationThroughput,
+                cacheReadTokens: sumOptional(events.compactMap(\.cacheReadTokens)),
+                cacheWriteTokens: sumOptional(events.compactMap(\.cacheWriteTokens)),
+                costEstimateUSD: sumOptional(events.compactMap(\.countedCostEstimateUSD))
             )
         }
         .sorted { $0.totalTokens == $1.totalTokens ? $0.model < $1.model : $0.totalTokens > $1.totalTokens }
+    }
+
+    static func sessionUsage(events: [CLIProxyUsageEvent]) -> [CLIProxySessionUsage] {
+        let grouped = Dictionary(grouping: events.compactMap { event -> (String, CLIProxyUsageEvent)? in
+            guard let sessionID = event.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !sessionID.isEmpty
+            else { return nil }
+            return (sessionID, event)
+        }, by: \.0).mapValues { $0.map(\.1) }
+
+        return grouped.map { sessionID, events in
+            let models = Array(Set(events.compactMap(\.model))).sorted()
+            return CLIProxySessionUsage(
+                id: sessionID,
+                displayName: sessionID,
+                promptTokens: events.reduce(0) { $0 + $1.countedPromptTokens },
+                completionTokens: events.reduce(0) { $0 + $1.countedCompletionTokens },
+                totalTokens: events.reduce(0) { $0 + ($1.countedTotalTokens ?? 0) },
+                requestCount: events.count,
+                errorCount: events.count(where: { $0.errorCode != nil }),
+                modelNames: models,
+                lastUsedAt: events.map(\.timestamp).max(),
+                contextBloatSignal: contextBloatSignal(events: events)
+            )
+        }
+        .sorted {
+            if $0.totalTokens != $1.totalTokens { return $0.totalTokens > $1.totalTokens }
+            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
     }
 
     static func runway(quota: CLIProxyQuotaWindow?, velocity: CLIProxyUsageVelocity?, now: Date) -> CLIProxyRunwayEstimate {
@@ -133,6 +174,56 @@ enum CLIProxyUsageMetricsCalculator {
         )
     }
 
+    private static func sumOptional(_ values: [Int]) -> Int? {
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0) { $0 + max(0, $1) }
+    }
+
+    private static func sumOptional(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0) { $0 + max(0, $1) }
+    }
+
+    private static func generationTokensPerSecond(events: [CLIProxyUsageEvent]) -> Double? {
+        let pairs = events.compactMap { event -> (tokens: Int, seconds: Double)? in
+            guard let duration = event.countedGenerationDurationMS else { return nil }
+            return (event.countedCompletionTokens, Double(duration) / 1000)
+        }
+        let totalSeconds = pairs.reduce(0) { $0 + $1.seconds }
+        guard totalSeconds > 0 else { return nil }
+        let totalTokens = pairs.reduce(0) { $0 + max(0, $1.tokens) }
+        return Double(totalTokens) / totalSeconds
+    }
+
+    private static func contextBloatSignal(events: [CLIProxyUsageEvent]) -> CLIProxyContextBloatSignal? {
+        let samples = events
+            .sorted { $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp }
+            .compactMap { event -> Int? in
+                guard event.promptTokens != nil else { return nil }
+                return event.countedPromptTokens
+            }
+        guard samples.count >= 3 else { return nil }
+
+        let windowSize = max(1, samples.count / 2)
+        let firstAverage = average(samples.prefix(windowSize))
+        let latestAverage = average(samples.suffix(windowSize))
+        let delta = latestAverage - firstAverage
+        let percentChange = firstAverage > 0 ? Double(delta) / Double(firstAverage) * 100 : nil
+        return CLIProxyContextBloatSignal(
+            sampleCount: samples.count,
+            firstAveragePromptTokens: firstAverage,
+            latestAveragePromptTokens: latestAverage,
+            deltaPromptTokens: delta,
+            percentChange: percentChange
+        )
+    }
+
+    private static func average(_ values: some Sequence<Int>) -> Int {
+        let collected = Array(values)
+        guard !collected.isEmpty else { return 0 }
+        return Int((Double(collected.reduce(0, +)) / Double(collected.count)).rounded())
+    }
+
     private static func window(
         for events: [CLIProxyUsageEvent],
         preset: CLIProxyUsageWindowPreset,
@@ -149,8 +240,9 @@ enum CLIProxyUsageMetricsCalculator {
             promptTokens: events.reduce(0) { $0 + $1.countedPromptTokens },
             completionTokens: events.reduce(0) { $0 + $1.countedCompletionTokens },
             totalTokens: events.reduce(0) { $0 + ($1.countedTotalTokens ?? 0) },
-            cacheReadTokens: cacheReads.isEmpty ? nil : cacheReads.reduce(0) { $0 + max(0, $1) },
-            cacheWriteTokens: cacheWrites.isEmpty ? nil : cacheWrites.reduce(0) { $0 + max(0, $1) },
+            cacheReadTokens: sumOptional(cacheReads),
+            cacheWriteTokens: sumOptional(cacheWrites),
+            costEstimateUSD: sumOptional(events.compactMap(\.countedCostEstimateUSD)),
             requestCount: events.count,
             errorCount: events.count(where: { $0.errorCode != nil })
         )

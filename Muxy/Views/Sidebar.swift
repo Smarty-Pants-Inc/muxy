@@ -363,6 +363,7 @@ struct SidebarFooter: View {
         .popover(isPresented: $showAIUsagePopover) {
             AIUsagePanel(
                 snapshots: usageService.snapshots,
+                cliProxySnapshot: usageService.cliProxyUsageSnapshot,
                 isRefreshing: usageService.isRefreshing,
                 lastRefreshDate: usageService.lastRefreshDate,
                 onRefresh: refreshUsage

@@ -89,8 +89,21 @@ final class GhosttyTerminalNSView: NSView {
 
     private var pendingSurfaceCreation = false
 
-    func createSurface() {
+    func createSurface(allowHeadless: Bool = false) {
         guard surface == nil, let app = GhosttyService.shared.app else { return }
+
+        let screen = window?.screen ?? (allowHeadless ? NSScreen.main : nil)
+        guard let screen,
+              let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
+        else {
+            pendingSurfaceCreation = true
+            return
+        }
+
+        if !allowHeadless, window?.occlusionState.contains(.visible) != true {
+            pendingSurfaceCreation = true
+            return
+        }
 
         guard let backingSize = backingPixelSize() else {
             pendingSurfaceCreation = true
@@ -145,11 +158,7 @@ final class GhosttyTerminalNSView: NSView {
 
         applyColorScheme(isDark: ThemeService.isCurrentAppearanceDark())
 
-        if let screen = window?.screen ?? NSScreen.main,
-           let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
-        {
-            ghostty_surface_set_display_id(surface, displayID)
-        }
+        ghostty_surface_set_display_id(surface, displayID)
 
         ghostty_surface_set_focus(surface, isFocused)
 
@@ -233,6 +242,9 @@ final class GhosttyTerminalNSView: NSView {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                if self?.pendingSurfaceCreation == true {
+                    self?.createSurface()
+                }
                 self?.updateMetalLayerSize(deferred: true)
             }
         }
@@ -277,6 +289,9 @@ final class GhosttyTerminalNSView: NSView {
 
     private func updateWindowVisibility() {
         let visible = window?.occlusionState.contains(.visible) ?? true
+        if visible, pendingSurfaceCreation {
+            createSurface()
+        }
         guard isWindowVisible != visible else { return }
         isWindowVisible = visible
         applyOcclusionState()
@@ -335,7 +350,7 @@ final class GhosttyTerminalNSView: NSView {
         if frame.size.width <= 0 || frame.size.height <= 0 {
             setFrameSize(NSSize(width: 1, height: 1))
         }
-        createSurface()
+        createSurface(allowHeadless: true)
     }
 
     private func backingPixelSize() -> (width: UInt32, height: UInt32)? {
@@ -379,7 +394,9 @@ final class GhosttyTerminalNSView: NSView {
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
         if result {
-            ghostty_surface_set_focus(surface, true)
+            if let surface {
+                ghostty_surface_set_focus(surface, true)
+            }
             if !isFocused {
                 DispatchQueue.main.async { [weak self] in
                     self?.onFocus?()
@@ -392,7 +409,9 @@ final class GhosttyTerminalNSView: NSView {
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
         if result {
-            ghostty_surface_set_focus(surface, false)
+            if let surface {
+                ghostty_surface_set_focus(surface, false)
+            }
         }
         return result
     }

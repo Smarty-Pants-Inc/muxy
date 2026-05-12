@@ -1,43 +1,122 @@
 import Foundation
 
+enum AgentTreeRegistryLocation {
+    static let environmentKey = "SMARTY_CODE_AGENT_SESSION_REGISTRY"
+    static let defaultPath = "/tmp/smarty-code-agent-usage-milestone/agent-sessions.json"
+
+    static var defaultURL: URL {
+        url(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func url(environment: [String: String]) -> URL {
+        if let override = environment[environmentKey],
+           !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return URL(fileURLWithPath: NSString(string: override).expandingTildeInPath)
+        }
+        return URL(fileURLWithPath: defaultPath)
+    }
+}
+
 struct AgentSessionRegistry {
     let fileURL: URL
     var staleLogInterval: TimeInterval
     var fileManager: FileManager
+    var dirtyWorktreeChecker: (String) -> Bool
+    var tmuxSessionChecker: (String) -> Bool
     var now: () -> Date
 
     init(
         fileURL: URL,
         staleLogInterval: TimeInterval = 300,
         fileManager: FileManager = .default,
+        dirtyWorktreeChecker: @escaping (String) -> Bool = AgentSessionRegistryParser.defaultDirtyWorktreeChecker,
+        tmuxSessionChecker: @escaping (String) -> Bool = AgentSessionRegistryParser.defaultTmuxSessionChecker,
         now: @escaping () -> Date = Date.init
     ) {
         self.fileURL = fileURL
         self.staleLogInterval = staleLogInterval
         self.fileManager = fileManager
+        self.dirtyWorktreeChecker = dirtyWorktreeChecker
+        self.tmuxSessionChecker = tmuxSessionChecker
         self.now = now
     }
 
-    func loadSnapshot() throws -> AgentSessionRegistrySnapshot {
+    func loadSnapshot(deriveFileRisks: Bool = true) throws -> AgentSessionRegistrySnapshot {
         let data = try Data(contentsOf: fileURL)
         return try AgentSessionRegistryParser.parseFixture(
             data: data,
             baseURL: fileURL.deletingLastPathComponent(),
             now: now(),
             staleLogInterval: staleLogInterval,
-            fileManager: fileManager
+            deriveFileRisks: deriveFileRisks,
+            fileManager: fileManager,
+            dirtyWorktreeChecker: dirtyWorktreeChecker,
+            tmuxSessionChecker: tmuxSessionChecker
+        )
+    }
+
+    func loadCachedSnapshot(
+        maxAge: TimeInterval = 2,
+        deriveFileRisks: Bool = true
+    ) throws -> AgentSessionRegistrySnapshot {
+        try AgentSessionRegistrySnapshotCache.load(
+            registry: self,
+            maxAge: maxAge,
+            deriveFileRisks: deriveFileRisks
         )
     }
 }
 
+private enum AgentSessionRegistrySnapshotCache {
+    private struct Entry {
+        let loadedAt: Date
+        let snapshot: AgentSessionRegistrySnapshot
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var entries: [String: Entry] = [:]
+
+    static func load(
+        registry: AgentSessionRegistry,
+        maxAge: TimeInterval,
+        deriveFileRisks: Bool
+    ) throws -> AgentSessionRegistrySnapshot {
+        let loadedAt = registry.now()
+        let key = [
+            registry.fileURL.standardizedFileURL.path,
+            deriveFileRisks.description,
+            registry.staleLogInterval.description,
+        ].joined(separator: "|")
+
+        lock.lock()
+        if let entry = entries[key], loadedAt.timeIntervalSince(entry.loadedAt) <= maxAge {
+            lock.unlock()
+            return entry.snapshot
+        }
+        lock.unlock()
+
+        let snapshot = try registry.loadSnapshot(deriveFileRisks: deriveFileRisks)
+
+        lock.lock()
+        entries[key] = Entry(loadedAt: loadedAt, snapshot: snapshot)
+        lock.unlock()
+        return snapshot
+    }
+}
+
 enum AgentSessionRegistryParser {
+    private static let codexLogProofReadLimit = 1_048_576
+
     static func parseFixture(
         data: Data,
         baseURL: URL? = nil,
         now: Date = Date(),
         staleLogInterval: TimeInterval = 300,
         deriveFileRisks: Bool = true,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        dirtyWorktreeChecker: @escaping (String) -> Bool = defaultDirtyWorktreeChecker,
+        tmuxSessionChecker: @escaping (String) -> Bool = defaultTmuxSessionChecker
     ) throws -> AgentSessionRegistrySnapshot {
         let decoder = registryDecoder()
         if let envelope = try? decoder.decode(RegistryEnvelope.self, from: data) {
@@ -48,7 +127,9 @@ enum AgentSessionRegistryParser {
                 now: now,
                 staleLogInterval: staleLogInterval,
                 deriveFileRisks: deriveFileRisks,
-                fileManager: fileManager
+                fileManager: fileManager,
+                dirtyWorktreeChecker: dirtyWorktreeChecker,
+                tmuxSessionChecker: tmuxSessionChecker
             )
         }
         let records = try decoder.decode([SessionRecord].self, from: data)
@@ -59,7 +140,9 @@ enum AgentSessionRegistryParser {
             now: now,
             staleLogInterval: staleLogInterval,
             deriveFileRisks: deriveFileRisks,
-            fileManager: fileManager
+            fileManager: fileManager,
+            dirtyWorktreeChecker: dirtyWorktreeChecker,
+            tmuxSessionChecker: tmuxSessionChecker
         )
     }
 
@@ -70,21 +153,39 @@ enum AgentSessionRegistryParser {
         now: Date = Date(),
         staleLogInterval: TimeInterval = 300,
         deriveFileRisks: Bool = true,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        dirtyWorktreeChecker: @escaping (String) -> Bool = defaultDirtyWorktreeChecker,
+        tmuxSessionChecker: @escaping (String) -> Bool = defaultTmuxSessionChecker
     ) -> AgentSessionRegistrySnapshot {
-        let sharedWorktrees = sharedWorktreeIdentities(sessions)
+        let sharedWorktrees = sharedWorktreeIdentities(sessions, baseURL: baseURL)
+        let dirtyWorktrees = deriveFileRisks
+            ? dirtyWorktreeIdentities(
+                sessions,
+                baseURL: baseURL,
+                checker: dirtyWorktreeChecker
+            )
+            : []
         let riskContext = RiskDerivationContext(
             sharedWorktrees: sharedWorktrees,
+            dirtyWorktrees: dirtyWorktrees,
             baseURL: baseURL,
             now: now,
             staleLogInterval: staleLogInterval,
             deriveFileRisks: deriveFileRisks,
-            fileManager: fileManager
+            fileManager: fileManager,
+            tmuxSessionChecker: tmuxSessionChecker
         )
         var derived = sessions.map { session in
-            session.addingRiskFlags(
+            let fileProofStatus = contextAllowsFileProofDerivation(riskContext)
+                ? derivedProofStatus(for: session, context: riskContext)
+                : nil
+            let proofStatus = strongestProofStatus(
+                session.proofStatus,
+                fileProofStatus
+            )
+            return session.withProofStatus(proofStatus).addingRiskFlags(
                 derivedRiskFlags(
-                    for: session,
+                    for: session.withProofStatus(proofStatus),
                     context: riskContext
                 )
             )
@@ -92,11 +193,13 @@ enum AgentSessionRegistryParser {
         derived = sessionsWithStaleChildRisk(derived)
         let roots = buildHierarchy(from: derived)
         let flat = roots.flatMap(\.flattened).map(\.session)
+        let attributionLabels = attributionLabelsBySessionID(roots: roots)
         return AgentSessionRegistrySnapshot(
             generatedAt: generatedAt,
             sessions: flat,
             roots: roots,
-            attributionLabelsBySessionID: attributionLabelsBySessionID(roots: roots)
+            attributionLabelsBySessionID: attributionLabels,
+            attributionLabelsByJoinKey: attributionLabelsByJoinKey(attributionLabels)
         )
     }
 
@@ -151,10 +254,33 @@ enum AgentSessionRegistryParser {
         return withFraction.date(from: trimmed) ?? withoutFraction.date(from: trimmed)
     }
 
-    private static func sharedWorktreeIdentities(_ sessions: [AgentSession]) -> Set<String> {
-        let identities = sessions.compactMap(\.references.worktreeIdentity)
-        let counts = Dictionary(grouping: identities, by: { $0 }).mapValues(\.count)
-        return Set(counts.compactMap { $0.value > 1 ? $0.key : nil })
+    private static func sharedWorktreeIdentities(_ sessions: [AgentSession], baseURL: URL?) -> Set<String> {
+        let identities = sessions.compactMap { session -> String? in
+            guard let identity = session.references.worktreeIdentity else { return nil }
+            return normalizedWorktreeIdentity(identity, baseURL: baseURL)
+        }
+        var shared = Set<String>()
+        for (index, identity) in identities.enumerated() {
+            guard !shared.contains(identity) else { continue }
+            if identities[(index + 1)...].contains(where: { pathsOverlap(identity, $0) }) {
+                shared.insert(identity)
+            }
+        }
+        return shared.union(identities.filter { identity in
+            shared.contains(where: { pathsOverlap(identity, $0) })
+        })
+    }
+
+    private static func dirtyWorktreeIdentities(
+        _ sessions: [AgentSession],
+        baseURL: URL?,
+        checker: (String) -> Bool
+    ) -> Set<String> {
+        let identities = Set(sessions.compactMap(\.references.worktreeIdentity))
+        return Set(identities.filter { identity in
+            guard let url = resolvedURL(for: identity, baseURL: baseURL) else { return false }
+            return checker(url.path)
+        }.compactMap { normalizedWorktreeIdentity($0, baseURL: baseURL) })
     }
 
     private static func derivedRiskFlags(
@@ -162,8 +288,15 @@ enum AgentSessionRegistryParser {
         context: RiskDerivationContext
     ) -> Set<AgentSessionRiskFlag> {
         var flags = Set<AgentSessionRiskFlag>()
-        if let worktree = session.references.worktreeIdentity, context.sharedWorktrees.contains(worktree) {
+        if let worktree = session.references.worktreeIdentity,
+           context.sharedWorktrees.contains(normalizedWorktreeIdentity(worktree, baseURL: context.baseURL))
+        {
             flags.insert(.sharedWorktree)
+        }
+        if let worktree = session.references.worktreeIdentity,
+           context.dirtyWorktrees.contains(normalizedWorktreeIdentity(worktree, baseURL: context.baseURL))
+        {
+            flags.insert(.dirtyWorktree)
         }
         if session.status == .running, session.proofStatus == .unverified {
             flags.insert(.unverifiedPromptReceipt)
@@ -186,10 +319,125 @@ enum AgentSessionRegistryParser {
         }
         guard session.status == .running else { return flags }
         let modified = (try? context.fileManager.attributesOfItem(atPath: logURL.path)[.modificationDate]) as? Date
-        if let modified, context.now.timeIntervalSince(modified) > context.staleLogInterval {
+        if let modified,
+           sessionHasLiveActivityHost(session, context: context),
+           context.now.timeIntervalSince(modified) > context.staleLogInterval
+        {
             flags.insert(.staleLog)
         }
         return flags
+    }
+
+    private static func sessionHasLiveActivityHost(
+        _ session: AgentSession,
+        context: RiskDerivationContext
+    ) -> Bool {
+        guard let tmuxSession = session.references.tmuxSession else { return true }
+        return context.tmuxSessionChecker(tmuxSession)
+    }
+
+    private static func derivedProofStatus(
+        for session: AgentSession,
+        context: RiskDerivationContext
+    ) -> AgentSessionProofStatus? {
+        var status: AgentSessionProofStatus?
+        if let finalReport = session.references.finalReport,
+           let finalReportURL = resolvedURL(for: finalReport, baseURL: context.baseURL),
+           context.fileManager.fileExists(atPath: finalReportURL.path)
+        {
+            status = strongestProofStatus(status, .finalReported)
+        }
+
+        guard let marker = session.references.lastPromptMarker,
+              let logPath = session.references.codexLog,
+              let logURL = resolvedURL(for: logPath, baseURL: context.baseURL),
+              let logText = boundedCodexLogProofText(from: logURL, fileManager: context.fileManager),
+              let markerRange = logText.range(of: marker)
+        else {
+            return status
+        }
+
+        let tail = String(logText[markerRange.upperBound...])
+        status = strongestProofStatus(status, .promptDelivered)
+        if codexLogTailShowsToolActivity(tail) {
+            status = strongestProofStatus(status, .toolActive)
+        }
+        return status
+    }
+
+    private static func contextAllowsFileProofDerivation(_ context: RiskDerivationContext) -> Bool {
+        context.deriveFileRisks
+    }
+
+    private static func boundedCodexLogProofText(from url: URL, fileManager: FileManager) -> String? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              (attributes[.type] as? FileAttributeType) == .typeRegular
+        else { return nil }
+
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        guard size > UInt64(codexLogProofReadLimit) else {
+            return try? String(contentsOf: url, encoding: .utf8)
+        }
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let offset = size - UInt64(codexLogProofReadLimit)
+        do {
+            try handle.seek(toOffset: offset)
+            let data = try handle.readToEnd() ?? Data()
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func codexLogTailShowsToolActivity(_ text: String) -> Bool {
+        text.split(whereSeparator: \.isNewline).contains { rawLine in
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data)
+            else { return false }
+            return jsonObjectShowsToolActivity(object)
+        }
+    }
+
+    private static func jsonObjectShowsToolActivity(_ object: Any) -> Bool {
+        if let dictionary = object as? [String: Any] {
+            for (key, value) in dictionary {
+                if key == "recipient_name" { return true }
+                if key == "type",
+                   let string = value as? String,
+                   ["function_call", "tool_call", "tool_use"].contains(string)
+                {
+                    return true
+                }
+                if jsonObjectShowsToolActivity(value) { return true }
+            }
+            return false
+        }
+        if let array = object as? [Any] {
+            return array.contains(where: jsonObjectShowsToolActivity)
+        }
+        return false
+    }
+
+    private static func strongestProofStatus(
+        _ lhs: AgentSessionProofStatus?,
+        _ rhs: AgentSessionProofStatus?
+    ) -> AgentSessionProofStatus {
+        let lhs = lhs ?? .unverified
+        let rhs = rhs ?? .unverified
+        return proofRank(lhs) >= proofRank(rhs) ? lhs : rhs
+    }
+
+    private static func proofRank(_ status: AgentSessionProofStatus) -> Int {
+        switch status {
+        case .unverified: 0
+        case .promptDelivered: 1
+        case .toolActive: 2
+        case .finalReported: 3
+        case .validated: 4
+        }
     }
 
     private static func resolvedURL(for path: String, baseURL: URL?) -> URL? {
@@ -197,6 +445,68 @@ enum AgentSessionRegistryParser {
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
         return (baseURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
             .appendingPathComponent(path)
+    }
+
+    private static func normalizedWorktreeIdentity(_ path: String, baseURL: URL?) -> String {
+        guard let url = resolvedURL(for: path, baseURL: baseURL) else { return "" }
+        return normalizedPath(url.standardizedFileURL.path)
+    }
+
+    private static func normalizedPath(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let expanded = NSString(string: trimmed).expandingTildeInPath
+        let standardized = URL(fileURLWithPath: expanded).standardizedFileURL.path
+        guard standardized != "/" else { return standardized }
+        return standardized.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+    }
+
+    private static func pathsOverlap(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs == rhs { return true }
+        if lhs == "/" || rhs == "/" { return lhs == "/" && rhs == "/" }
+        return lhs.hasPrefix(rhs + "/") || rhs.hasPrefix(lhs + "/")
+    }
+
+    static func defaultDirtyWorktreeChecker(_ path: String) -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let expanded = NSString(string: trimmed).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: expanded) else { return false }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", expanded, "status", "--porcelain"]
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return false }
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            return !data.isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    static func defaultTmuxSessionChecker(_ session: String) -> Bool {
+        let trimmed = session.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["tmux", "has-session", "-t", trimmed]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 
     private static func sessionsWithStaleChildRisk(_ sessions: [AgentSession]) -> [AgentSession] {
@@ -312,8 +622,23 @@ enum AgentSessionRegistryParser {
         if let tmux = session.references.tmuxSession { keys.append("tmux:\(tmux)") }
         keys.append(contentsOf: session.attribution.conversationIds.map { "conversation:\($0)" })
         keys.append(contentsOf: session.attribution.labels.map { "label:\($0)" })
-        keys.append(contentsOf: session.attribution.requestSessionIds.map { "request-session:\($0)" })
+        for requestSessionID in session.attribution.requestSessionIds {
+            keys.append("request-session:\(requestSessionID)")
+            keys.append("request-session:\(CLIProxyUsageRedactor.safeIdentifier(requestSessionID, prefix: "session"))")
+        }
         return Array(Set(keys)).sorted()
+    }
+
+    private static func attributionLabelsByJoinKey(
+        _ labelsBySessionID: [String: AgentUsageAttributionLabels]
+    ) -> [String: AgentUsageAttributionLabels] {
+        var labelsByJoinKey: [String: AgentUsageAttributionLabels] = [:]
+        for labels in labelsBySessionID.values {
+            for joinKey in labels.joinKeys where labelsByJoinKey[joinKey] == nil {
+                labelsByJoinKey[joinKey] = labels
+            }
+        }
+        return labelsByJoinKey
     }
 }
 
@@ -324,11 +649,13 @@ private struct RegistryEnvelope: Decodable {
 
 private struct RiskDerivationContext {
     let sharedWorktrees: Set<String>
+    let dirtyWorktrees: Set<String>
     let baseURL: URL?
     let now: Date
     let staleLogInterval: TimeInterval
     let deriveFileRisks: Bool
     let fileManager: FileManager
+    let tmuxSessionChecker: (String) -> Bool
 }
 
 private struct SessionRecord: Decodable {

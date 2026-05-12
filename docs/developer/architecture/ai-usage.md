@@ -25,7 +25,7 @@ The service is observed by `SidebarFooter` (preview icon + popover) and `AIUsage
 
 ## Providers
 
-`AIUsageProvider` is the read-only counterpart to `AIProviderIntegration`. A single concrete type can adopt both (e.g. `ClaudeCodeProvider` installs hooks AND fetches usage). `AIProviderRegistry.usageProviders` lists all usage providers — Claude Code, Codex, Copilot, Amp, Z.ai, MiniMax, Kimi, Factory.
+`AIUsageProvider` is the read-only counterpart to `AIProviderIntegration`. A single concrete type can adopt both (e.g. `ClaudeCodeProvider` installs hooks AND fetches usage). `AIProviderRegistry.usageProviders` lists all usage providers — Claude Code, Codex, CLIProxyAPI, Copilot, Amp, Z.ai, MiniMax, Kimi, Factory.
 
 Each provider has a matching `{Name}UsageParser` taking raw JSON → `[AIUsageMetricRow]`. Parsers are unit-tested against fixture payloads in `Tests/MuxyTests/Services/*UsageParserTests.swift`; HTTP paths are tested with `URLProtocol` stubs in `*UsageAPIClientTests.swift` where present.
 
@@ -61,3 +61,9 @@ On first launch `AIUsageSettingsStore.isUsageEnabled()` runs a one-shot migratio
 ## Row policy
 
 `AIUsageRowPolicy` splits metric rows into primary (session / 5h / hourly / premium) and secondary (weekly / monthly / daily / billing) buckets by label prefix. By default the UI shows only primary rows; the "Show Secondary Limits" toggle opts into the full list. Dollar-denominated detail strings are filtered out so the sidebar stays focused on quotas.
+
+## CLIProxyAPI
+
+`CLIProxyUsageProvider` is local-only and capability-gated. It first confirms an OpenAI-compatible local proxy with `/v1/models`, then looks for normalized usage snapshots exposed by a local collector-compatible endpoint (`/v0/usage/snapshot`, `/api/usage/snapshot`, or `/usage/snapshot`). If a plaintext CLIProxyAPI management key is configured locally, the provider probes `/v0/management/usage-queue`, drains CLIProxyAPI 6.10.x queue records into app-owned SQLite, and replays persisted normalized events for rolling history after the destructive queue is empty. The provider also reports which stats endpoints were probed, whether a version surface was exposed by the local proxy, whether management endpoints were safely probed, and whether the detected snapshot represents SQLite-collected Redis-queue data, an external collector/dashboard, or built-in usage data. Wrong-key management failures are backed off before retrying. If no collector/dashboard/built-in stats source responds, Muxy reports the missing usage-history capability instead of rendering zero-token history.
+
+CLIProxyAPI snapshots may include account `lastUsedAt`, `recentFailure`, quota reset windows, per-request `sessionID`, cache read/write token counts, request latency, time-to-first-token, generation duration, and `costEstimateUSD`. These fields render only when present in the collector payload; missing cache/cost/latency/quota/refill/context-bloat/session-attribution data is called out as unavailable rather than inferred. When session IDs match the local agent registry's explicit attribution join keys, the native view labels hot sessions as confirmed or suggested agent usage. Queue records without explicit future session/conversation/thread fields are not treated as attributed sessions. Account identifiers, session identifiers, warning text, failure messages, URLs, and model/account display strings pass through the CLIProxyAPI redactor before UI display.

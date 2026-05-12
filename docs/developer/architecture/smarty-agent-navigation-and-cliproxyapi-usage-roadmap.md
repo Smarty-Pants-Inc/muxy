@@ -1,7 +1,7 @@
 # Milestone: Smarty Agent Navigation and CLIProxyAPI Usage Intelligence
 
 Date: 2026-05-10
-Status: Ready milestone spec for conductor-led implementation planning
+Status: Implemented and current-test-gated in the Smarty Code Muxy fork for the agreed read-only agent workbench and CLIProxyAPI usage-intelligence slice. Dev install and CUA dogfood have historical proof; fresh source validation is green after the latest changes. Stable promotion and live mutating agent controls remain explicitly deferred while stable Smarty Code is the running self-hosted app.
 
 ## Objective
 
@@ -32,17 +32,11 @@ This document is considered complete when it gives a conductor agent enough info
 - `Muxy/Views/Sidebar/AIUsagePanel.swift` owns the AI Usage sidebar popover.
 - `Muxy/Views/Settings/AIUsageSettingsView.swift` owns the AI Usage settings tab.
 - `Muxy/Services/AIUsageService.swift`, `AIUsagePreferences.swift`, `AIUsageModels.swift`, `AIUsageProvider.swift`, and `Muxy/Services/Providers/*UsageProvider.swift` form the current provider snapshot pipeline.
-- `AIProviderRegistry.usageProviders` currently includes Claude Code, Codex, Copilot, Cursor, Amp, Z.ai, MiniMax, Kimi, and Factory. There is no CLIProxyAPI provider in this registry yet.
+- `AIProviderRegistry.usageProviders` now includes Claude Code, Codex, CLIProxyAPI, Copilot, Cursor, Amp, Z.ai, MiniMax, Kimi, and Factory.
 
 ### AI Usage preference gate
 
-The existing AI Usage popover is gated by preferences:
-
-- `SidebarFooter` renders `aiUsageButton` only when `@AppStorage(AIUsageSettingsStore.usageEnabledKey)` is true.
-- `ShortcutActionDispatcher` refuses `.toggleAIUsage` when `AIUsageSettingsStore.isUsageEnabled()` is false.
-- `AIUsageService.refreshIfNeeded()` and `refresh(force:)` both return early when usage is disabled.
-- `AIUsageSettingsStore.isUsageEnabled()` defaults to false unless an older tracked-provider preference already exists and migrates the global flag on first launch.
-- The setting is bundle/channel-specific. If `muxy.usage.enabled` is `0` or unset for the app identity currently running (`com.smartypants.smarty-code`, `com.smartypants.smarty-code.dev`, or legacy `com.muxy.app`), the footer button is hidden even though the code exists. Re-check with `defaults read <bundle-id> muxy.usage.enabled` when debugging a specific build.
+The existing AI Usage preference gate stays as-is for this milestone.
 
 ### `smarty-zed` design to port into native Smarty Code UX
 
@@ -87,7 +81,7 @@ Project
           Subagent / worker session
 ```
 
-Required capabilities:
+Shipped read-only slice capabilities:
 
 - Keep the existing compact sidebar behavior fast and uncluttered.
 - In wide mode, show expandable project -> worktree -> agent tree hierarchy.
@@ -99,10 +93,12 @@ Required capabilities:
   - missing Codex log;
   - tmux session alive but no recent log activity;
   - final report exists but validation gate has not run.
-- Provide context actions:
-  - attach/open terminal;
+- Provide safe context actions for local references:
   - open Codex JSONL log;
-  - open worktree/project;
+  - open final report;
+  - open worktree/project.
+- Render the later live-control affordances as disabled stubs until the guarded-control phase explicitly owns them:
+  - attach/open terminal;
   - send prompt;
   - broadcast to subtree;
   - mark blocked/complete manually;
@@ -133,8 +129,6 @@ Required views:
 - **Accounts**: account/provider rows with quota/headroom, active sessions, current cooling/disabled state, recent failures, and last used time.
 - **Velocity**: token velocity and request velocity over 1m/5m/15m/1h windows.
 - **Models**: per-model tokens, requests, latency, cache reads/writes where available, and cost estimate if pricing data is reliable.
-- **Sessions**: privacy-preserving session/conversation IDs joined to usage where available.
-- **Diagnostics**: proxy reachability, detected stats backend, version, config warnings, and missing capability explanations.
 
 ## CLIProxyAPI Metrics Backlog
 
@@ -146,12 +140,10 @@ Metrics must be capability-gated: show a metric only when its inputs are proven.
 | --- | --- | --- |
 | Token velocity | Shows live burn rate and whether current work is accelerating. | Timestamped per-request prompt/completion/total tokens. |
 | Prompt/completion split | Reveals whether context bloat or generation dominates spend. | Prompt and completion token counts. |
-| Cache hit/read/write tokens | Shows whether session affinity and prompt reuse are preserving cache value. | Provider-specific cache token fields or normalized proxy events. |
+| Cache hit/read/write tokens | Shows how much reported cache activity contributes to prompt reuse. | Provider-specific cache token fields or normalized proxy events. |
 | Burn-to-reset / exhaustion ETA | Predicts when an account/model window runs out at current velocity. | Token velocity plus quota/reset window. |
 | Account heat map | Shows which accounts are hot, idle, cooling, or exhausted. | Per-account usage events. |
 | Capacity score | One glance answer to "how much AI runway do I have right now?" | Quota headroom, cooling state, active sessions, reset windows. |
-| Session affinity map | Explains why a session keeps using one account and whether failover happened. | Session ID/conversation ID hash plus selected auth/account. |
-| Retry/failover rate | Early warning for quota errors, provider drift, or flaky accounts. | HTTP status/error category plus retry target. |
 | Time-to-first-token | Separates proxy/provider latency from generation length. | Request start and first streamed token timestamp. |
 | Generation throughput | Shows tokens/sec after first token. | Completion tokens and generation duration. |
 | Cost estimate | Useful for paid API-backed providers, but should be marked estimated. | Model pricing table plus normalized token usage. |
@@ -165,9 +157,7 @@ Metrics must be capability-gated: show a metric only when its inputs are proven.
 - **Hot-session list**: top sessions by tokens in the last 15 minutes.
 - **Context bloat detector**: prompt tokens/request trending upward within the same session.
 - **Cache preservation score**: cache tokens divided by prompt tokens, shown only for models/providers that report cache metrics.
-- **Failure fingerprint**: grouped quota/auth/rate-limit errors by account and model.
-- **Model mix**: token share by model family, useful when aliases route to multiple upstream models.
-- **What can I launch now?** recommendation derived from capacity, active sessions, and cooldown.
+- **Model mix**: token share by model family, useful when provider aliases resolve to multiple upstream models.
 
 ## Data Model Direction
 
@@ -214,17 +204,124 @@ struct CLIProxyAccountUsage: Equatable, Identifiable {
 
 The exact schema should be finalized by the CLIProxyAPI discovery track after inspecting the real stats source selected for this machine.
 
-## Product Definition Of Done
+## Implemented Current State
 
-The implemented milestone is done only when these user-visible outcomes are proven:
+- Agent navigation is implemented as a hidden wide-sidebar tree gated by `smarty.agentTree.enabled` or `SMARTY_CODE_AGENT_TREE_ENABLED`. It reads `/tmp/smarty-code-agent-usage-milestone/agent-sessions.json` by default, supports an override with `SMARTY_CODE_AGENT_SESSION_REGISTRY`, preserves compact sidebar behavior, and keeps mutating controls disabled.
+- Agent session models parse conductor/orchestrator/subagent roles, lifecycle state, proof state, risk flags, local references, and attribution join labels from local registry JSON. Derived risks include shared worktree, dirty worktree, missing log, live-tmux stale log, unverified prompt receipt, unvalidated final report, and stale child.
+- CLIProxyAPI usage intelligence is implemented as a local-only provider plus native AI Usage section. It probes local Codex config/default bases for `/v1/models`, then looks for collector-compatible normalized snapshots at `/v0/usage/snapshot`, `/api/usage/snapshot`, or `/usage/snapshot`. When a configured plaintext management key is available, it probes `/v0/management/usage-queue`, drains CLIProxyAPI 6.10.x usage queue records into app-owned SQLite, and replays persisted normalized events for rolling history. It reports the probed stats surfaces, the detected stats backend, proxy version header availability, local binary/config findings, safe management probe status, and whether Redis-queue/external/built-in collector data was detected. Wrong-key management failures back off before retrying so Smarty Code does not create a lockout loop.
+- The native CLIProxyAPI view renders overview, capabilities, accounts, refill timeline, velocity, hot sessions, and models. It shows last-used time, recent failure, cache read/write tokens, cache preservation score, latency, time-to-first-token, generation throughput, cost estimates, rolling windows, textual velocity sparkline, runway, capacity, context-bloat signals, and confirmed/suggested agent attribution only when the collector payload and local agent registry provide the required inputs. Missing usage-history, quota, cache, latency, timing, throughput, cost, refill, context-bloat, or session-attribution data is rendered as explicit unavailable state instead of zeroes.
+- The build script is Apple Silicon-only and thins copied framework/helper binaries to arm64 before signing so Smarty Code bundles do not retain nested x86_64 helper slices.
 
-1. **Navigation**: wide left navigation can show project -> worktree -> agent tree hierarchy with conductor, orchestrator, and subagent rows, while compact mode remains fast and uncluttered.
-2. **Agent proof**: agent rows distinguish lifecycle state from proof/verification state and do not claim prompt delivery or completion from terminal appearance alone.
-3. **Safe controls**: any attach/open/send/broadcast/stop controls are guarded, logged, and refuse ambiguous destructive actions.
-4. **CLIProxyAPI detection**: the app can detect local CLIProxyAPI reachability and report exactly which stats capabilities are available.
-5. **CLIProxyAPI-native view**: when stats are available, the panel shows accounts, rolling usage, velocity, model mix, and diagnostics without leaking secrets.
-6. **Capability-gated metrics**: unavailable metrics show a clear missing-capability explanation rather than fake zeros.
-7. **Validation**: `scripts/checks.sh`, dev/stable builds, and manual `Smarty Code Dev` dogfood gates pass before stable promotion.
+## Current Validation Snapshot
+
+Validated on 2026-05-11 after the Dev-only agent-tree refresh fix and CUA
+proof pass. Stable `Smarty Code` is the running self-hosted app and was not
+quit, queued, installed, or promoted during this pass.
+
+Source and build gates:
+
+- `swift test --filter AgentTreeView` passed with 9 tests.
+- `swift test --filter 'TerminalEnvVarBuilder|AgentSessionRegistry|CLIProxyUsage|AgentTreeView'` passed with 69 tests across terminal environment, agent registry, agent tree, CLIProxyAPI provider/parser/collector/metrics, and CLIProxyAPI section formatter suites after the latest derived-metrics and accessibility/performance hardening changes.
+- `scripts/checks.sh` passed formatting, linting, build, and full test gates; the latest pass on 2026-05-11 completed in 16s after formatting the metrics file.
+- After adding the live-tmux stale-log risk gate, `swift test --filter AgentSessionRegistry` passed with 9 tests and `scripts/checks.sh` passed again.
+- `scripts/build-smarty-code.sh --channel dev --install` rebuilt and installed `Smarty Code Dev` build 487 after the latest source changes.
+- `./scripts/verify-smarty-code-apps.sh --channel dev --expected-build 487 --source-app forks/muxy/build/smarty-code/dev/Smarty Code Dev.app` passed after the latest install: bundle id `com.smartypants.smarty-code.dev`, arm64 binary, zero nested x86_64 Mach-O files, codesign OK, and source match OK.
+- Parent wrapper/script gates also passed: `bash -n scripts/verify-smarty-code-apps.sh scripts/queue-smarty-code-stable-install.sh scripts/promote-smarty-code-stable.sh scripts/open-smarty-code-full-disk-access.sh forks/muxy/scripts/build-smarty-code.sh` and `uv run --with pytest python -m pytest tests/test_smarty_wrapper.py` with 14 tests.
+
+Dev-channel GUI dogfood evidence, captured with the installed `cua-driver`/CUA
+path only:
+
+- `/tmp/smarty-code-dev-agenttree-fixed.json` and `.png` show the wide sidebar
+  rendering `smarty-code -> primary -> Agent sessions for smarty-code` with
+  `Roadmap conductor`, `Navigation + Usage orchestrator`, and `CLIProxyAPI proof
+  worker` rows. The same AX snapshot shows separate lifecycle status, proof
+  badges, and risk badges such as `Status: Running`, `Proof: Tool`, `Status:
+  Complete`, `Proof: Validated`, `Risk: Shared`, `Risk: Dirty`, and `Risk:
+  Stale log`.
+- `/tmp/smarty-code-dev-ai-usage-current-space.json` and `.png` show the AI
+  Usage popover rendering the native `CLIProxyAPI usage` section. The live local
+  service is reported as `Proxy only · http://127.0.0.1:8317`, `reachable`, with
+  explicit missing-capability states for rolling tokens, accounts, capacity,
+  models, usage history, velocity, hot sessions, and model mix instead of fake
+  zeroes.
+
+Operational safety evidence:
+
+- This pass did not use or start Codex Computer Use. Host process state may
+  include unrelated/pre-existing Codex Computer Use MCP processes, so process
+  listings alone must not be used as proof of this milestone's GUI automation
+  path. Stable `Smarty Code` remained the self-hosted app and was not quit,
+  installed, promoted, or queued by this pass.
+- Codex Computer Use must not be used for this project. It can trigger broad
+  macOS app-data TCC prompts. Use the installed `cua-driver`/CUA skill path only,
+  and stop rather than falling back to Codex Computer Use.
+
+### Stable Promotion State
+
+Stable promotion is intentionally deferred because this session is running inside
+stable `Smarty Code`.
+
+- Installed stable remains the user's live daily-driver app and must be treated
+  as hands-off until Paul explicitly asks to quit/promote/install it.
+- No live queued stable installer is currently active. The old log
+  `/tmp/smarty-code-stable-install-20260510153102.log` is historical and only
+  shows a prior helper waiting for stable to quit.
+- Before any future stable promotion, rebuild/verify the exact stable bundle and
+  install only after Paul confirms stable can be quit. Then run:
+
+```bash
+./scripts/verify-smarty-code-apps.sh --channel stable --expected-build 487 --source-app "forks/muxy/build/smarty-code/stable/Smarty Code.app"
+```
+
+Expected stable evidence is build 487 or newer as appropriate, arm64-only,
+zero nested x86_64 Mach-O files, successful codesign verification, and installed
+binary SHA-256 matching the rebuilt source app.
+
+### Dev Dogfood Setup
+
+The Dev proof depends on the local, out-of-git fixture and prefs below:
+
+- `/tmp/smarty-code-agent-usage-milestone/agent-sessions.json` contains a
+  conductor -> orchestrator -> subagent fixture with local Codex-log and final
+  report references under the same directory.
+- `com.smartypants.smarty-code.dev` has `smarty.agentTree.enabled=1`,
+  `muxy.usage.enabled=1`, and `muxy.usage.provider.cliproxyapi.enabled=1`.
+
+### Completion Audit Checkpoint
+
+| Product DoD item | Evidence | Status |
+| --- | --- | --- |
+| 1. Navigation hierarchy | `AgentTreeView`, `AgentTreeSupport`, `AgentSessionRegistry`, `SidebarLayoutTests`, targeted tests, and `/tmp/smarty-code-dev-agenttree-fixed.json` prove the wide project/worktree/agent hierarchy in Dev. Compact/sidebar mode preservation is source/test-gated. | Dev source/test/CUA proven; not stable-promoted. |
+| 2. Agent proof separation | `AgentSessionModels` keeps lifecycle and proof state distinct; registry tests derive proof from registry/Codex JSONL/final-report signals; Dev CUA shows separate `Status` and `Proof` badges. | Source/test/Dev CUA proven. |
+| 3. Safe controls | Open-worktree/log/final-report references validate local paths before opening; mutating controls remain disabled in this read-only slice. Live-tmux stale-log risk is injected/tested instead of inferred solely from `running` state. | Safe read-only slice proven; full guarded attach/send/broadcast/mark/stop control phase is explicitly deferred. |
+| 4. CLIProxyAPI detection | `CLIProxyUsageService` parses local Codex config including `experimental_bearer_token`, probes local `/v1/models`, normalized stats endpoints, local binary/config, Redis-queue hints, and management endpoints only with a configured management key. The accepted management-key env vars are `CLIPROXYAPI_MANAGEMENT_KEY`, `CLIPROXYAPI_REMOTE_MANAGEMENT_KEY`, and `CLIPROXYAPI_MANAGEMENT_SECRET_KEY`. `/v0/management/usage-queue` records are normalized into app-owned SQLite when management auth succeeds, with wrong-key backoff and persisted replay when the queue is empty. Live Dev CUA reports `Proxy only` reachable because no management key-backed live collector was enabled during dogfood. | Source/test/Dev CUA proven; live stats backend remains capability-gated. |
+| 5. CLIProxyAPI-native view | `CLIProxyUsageSection` renders overview, capabilities, accounts, refill timeline, velocity, hot sessions, and models; formatter/tests cover textual velocity sparkline, cache preservation, context bloat, and refill rows. `/tmp/smarty-code-dev-ai-usage-current-space.json` historically proves the installed Dev popover renders the native CLIProxyAPI section in proxy-only mode. | Source/current-test proven; Dev CUA artifact is historical. |
+| 6. Capability-gated metrics | Metrics/parser/UI tests cover missing-history/quota/cache/latency/timing/throughput/cost/attribution/refill/context-bloat explanations; Dev CUA shows unavailable states instead of zeroes for the live proxy-only backend. | Source/current-test proven; live velocity/history requires a management-key-backed collector or external stats backend. |
+| 7. Validation and promotion | Targeted tests, `scripts/checks.sh`, Dev build/install, and Dev source-match verifier passed after the latest changes. | Dev complete; stable promotion/source-match intentionally deferred while stable is the running app. |
+
+### Remaining Completion Risks / Gaps
+
+These items prevent claiming the entire roadmap is fully complete if the target
+scope includes stable promotion or the later control/collector phases:
+
+- Stable is not source-matched to the latest dirty-worktree build because stable
+  is currently the running self-hosted app and was intentionally untouched.
+- Full mutating agent controls (`attach`, `send prompt`, `broadcast`, `mark
+  blocked`, `mark complete`, `stop`) are intentionally not implemented; the
+  completed slice ships safe disabled stubs plus local open-reference actions. A
+  future guarded-control phase must prove session identity, confirmation UX,
+  logging, and rollback behavior before enabling these actions.
+- The Smarty Code-owned Redis-queue -> SQLite collector is implemented and
+  unit-tested, but live dogfood still reports proxy-only when no management key
+  is configured for the app. This is intentional capability-gating, not a fake
+  zero-history state.
+- Compact mode is covered by source/tests; after the Dev CUA proof, further GUI
+  attempts were stopped to avoid more macOS TCC prompts and because Codex
+  Computer Use is now explicitly forbidden for this workflow.
+- Registry-scale performance is covered by a 131-session parser/cache test with
+  deduplicated process probes. Large SwiftUI sidebar responsiveness with 100+
+  visible sessions plus large project lists remains future visual/performance
+  dogfood.
 
 ## Parallel Roadmap
 
@@ -276,7 +373,7 @@ Run after Wave 1 contracts are accepted.
 | 11 Agent session model | New agent/session registry service/models and fixture tests. | Read-only registry rendering from fixture/local state; safe action stubs. | Unit tests for registry parsing/status transitions. |
 | 12 CLIProxyAPI provider | New CLIProxyAPI detection/provider service and settings integration. | Capability-gated provider snapshot with safe errors. | Unit tests with URLProtocol/fixture responses. |
 | 13 Metrics calculators | Pure calculators for velocity, ETA, capacity, and heat. | Deterministic math tests over synthetic windows. | `swift test --filter` targeted calculators. |
-| 14 Usage panel UI | `AIUsagePanel` extension/components for CLIProxyAPI-native cards. | Overview/accounts/velocity/models/diagnostics UI. | Snapshot/preview/manual validation. |
+| 14 Usage panel UI | `AIUsagePanel` extension/components for CLIProxyAPI-native cards. | Overview/accounts/velocity/models UI. | Snapshot/preview/manual validation. |
 
 Contention rule: Tracks 10 and 14 both touch UI. Launch them in parallel only if their component paths are separated; otherwise run them in sequential mini-waves after shared model contracts land.
 
@@ -310,7 +407,7 @@ scripts/build-smarty-code.sh --channel stable
 Manual gates:
 
 - Launch `Smarty Code Dev` first.
-- Confirm CLIProxyAPI diagnostics explain the detected stats capability and never expose secrets.
+- Confirm missing-capability explanations are clear and never expose secrets.
 - Confirm token velocity changes when a controlled local request is made through the proxy, if a stats backend is available.
 - Confirm agent-tree fixture/local registry renders without disturbing existing tmux or Codex sessions.
 - Promote to stable only after dev-channel validation.
@@ -355,9 +452,9 @@ Use these launch contracts when creating track worktrees. Each orchestrator may 
 | 06 Test harness | `test-harness` | Tests/fixtures/docs for verification strategy. | Redaction rules and command matrix. | Conductor knows exact gates per implementation track. |
 | 10 Sidebar hierarchy | `sidebar-hierarchy` | `Muxy/Views/Sidebar*` and new sidebar components only. | UI implementation plus preview/manual proof. | Sidebar renders project/worktree/agent hierarchy and compact mode is unchanged. |
 | 11 Agent session model | `agent-session-model` | New agent/session service/models/tests. | Read-only registry implementation and tests. | Fixture/local registry can render without touching host tmux sessions. |
-| 12 CLIProxyAPI provider | `cliproxy-provider` | CLIProxyAPI detection/provider service and provider tests. | Capability-gated snapshots and safe diagnostics. | Offline, no-stats, and stats-available fixtures all behave correctly. |
+| 12 CLIProxyAPI provider | `cliproxy-provider` | CLIProxyAPI detection/provider service and provider tests. | Capability-gated snapshots and safe missing-capability explanations. | Offline, no-stats, and stats-available fixtures all behave correctly. |
 | 13 Metrics calculators | `metrics-calculators` | Pure calculator files/tests. | Rolling-window velocity, ETA, and capacity calculators. | Deterministic tests cover edge cases and missing-data behavior. |
-| 14 Usage panel UI | `usage-panel-ui` | `AIUsagePanel` components and related UI only. | Overview/accounts/velocity/models/diagnostics UI. | UI renders from fixtures and hides unavailable metrics honestly. |
+| 14 Usage panel UI | `usage-panel-ui` | `AIUsagePanel` components and related UI only. | Overview/accounts/velocity/models UI. | UI renders from fixtures and hides unavailable metrics honestly. |
 
 Orchestrator goal prompt template:
 
@@ -405,7 +502,7 @@ Implementation impact:
 
 - Track 03 must prove whether the Redis-compatible usage queue is enabled and what payload shape it exposes on this machine.
 - Track 12 should implement capability detection in this order: proxy reachable -> management/config metadata -> Redis queue collector -> optional external keeper/dashboard adapters.
-- If no event source is available, the panel should show diagnostics and proxy health but explicitly mark velocity/history metrics unavailable.
+- If no event source is available, the panel should explicitly mark velocity/history metrics unavailable.
 
 ### 3. Token/cost attribution
 
@@ -413,7 +510,7 @@ Implementation impact:
 
 Rationale:
 
-- Automatic cwd attribution can be wrong for multiplexed shells, reused tmux sessions, remote commands, background jobs, and model requests routed through aliases.
+- Automatic cwd attribution can be wrong for multiplexed shells, reused tmux sessions, remote commands, background jobs, and model requests that use aliases.
 - Cost and velocity dashboards should not falsely blame the wrong project/worktree.
 - Explicit labels align with the conductor/orchestrator registry model and are easier to audit.
 

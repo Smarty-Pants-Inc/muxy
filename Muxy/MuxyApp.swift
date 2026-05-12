@@ -11,8 +11,10 @@ struct MuxyApp: App {
     @State private var worktreeStore: WorktreeStore
     @State private var vcsWorktreeAutoRefresher: VCSWorktreeAutoRefresher
     private let updateService = UpdateService.shared
+    private let agentSessionRegistry = AgentSessionRegistry(fileURL: AgentTreeRegistryLocation.defaultURL)
 
     init() {
+        TerminalEnvVarBuilder.scrubInheritedTerminalEnvironment()
         _ = MuxyApp.launchDate
         MuxyLegacyMigration.runIfNeeded()
         let environment = AppEnvironment.live
@@ -47,6 +49,7 @@ struct MuxyApp: App {
                 .environment(appState)
                 .environment(projectStore)
                 .environment(worktreeStore)
+                .environment(\.agentSessionRegistry, agentSessionRegistry)
                 .environment(GhosttyService.shared)
                 .environment(MuxyConfig.shared)
                 .environment(ThemeService.shared)

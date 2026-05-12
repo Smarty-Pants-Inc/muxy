@@ -63,16 +63,68 @@ enum MuxyFileStorage {
 enum MuxyLegacyMigration {
     static let defaultsMarkerKey = "smartyCode.didMigrateMuxyDefaults.v1"
     static let fileMarkerName = ".migrated-from-muxy"
+    static let optInKey = "smartyCode.allowLegacyMuxyMigration.v1"
+    static let optInEnvironmentKey = "SMARTY_CODE_ALLOW_LEGACY_MUXY_MIGRATION"
 
-    static func runIfNeeded() {
-        guard AppIdentity.bundleIdentifier != AppIdentity.legacyBundleIdentifier else { return }
-        migrateDefaultsIfNeeded()
-        _ = try? copyLegacyFilesIfNeeded(
-            legacyDirectory: MuxyFileStorage.legacyAppSupportDirectory(create: false),
-            destinationDirectory: MuxyFileStorage.appSupportDirectory(),
-            markerURL: MuxyFileStorage.appSupportDirectory().appendingPathComponent(fileMarkerName),
-            fileManager: .default
+    static func runIfNeeded(
+        defaults: UserDefaults = .standard,
+        currentBundleIdentifier: String = AppIdentity.bundleIdentifier,
+        legacyBundleIdentifier: String = AppIdentity.legacyBundleIdentifier,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        legacyDirectoryProvider: () -> URL = { MuxyFileStorage.legacyAppSupportDirectory(create: false) },
+        destinationDirectoryProvider: () -> URL = { MuxyFileStorage.appSupportDirectory() }
+    ) {
+        guard shouldAutomaticallyMigrate(
+            currentBundleIdentifier: currentBundleIdentifier,
+            legacyBundleIdentifier: legacyBundleIdentifier,
+            defaults: defaults,
+            environment: environment
         )
+        else { return }
+        migrateDefaultsIfNeeded(
+            defaults: defaults,
+            legacyBundleIdentifier: legacyBundleIdentifier,
+            currentBundleIdentifier: currentBundleIdentifier
+        )
+        let destinationDirectory = destinationDirectoryProvider()
+        _ = try? copyLegacyFilesIfNeeded(
+            legacyDirectory: legacyDirectoryProvider(),
+            destinationDirectory: destinationDirectory,
+            markerURL: destinationDirectory.appendingPathComponent(fileMarkerName),
+            fileManager: .default,
+            isLegacyBundle: currentBundleIdentifier == legacyBundleIdentifier
+        )
+    }
+
+    static func shouldAutomaticallyMigrate(
+        currentBundleIdentifier: String = AppIdentity.bundleIdentifier,
+        legacyBundleIdentifier: String = AppIdentity.legacyBundleIdentifier,
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard currentBundleIdentifier != legacyBundleIdentifier else { return false }
+        guard isSmartyCodeBundleIdentifier(currentBundleIdentifier) else { return true }
+        return defaults.bool(forKey: optInKey)
+            || truthyEnvironmentValue(environment[optInEnvironmentKey])
+    }
+
+    static func isSmartyCodeBundleIdentifier(_ bundleIdentifier: String) -> Bool {
+        bundleIdentifier == "com.smartypants.smarty-code"
+            || bundleIdentifier == "com.smartypants.smarty-code.dev"
+    }
+
+    private static func truthyEnvironmentValue(_ value: String?) -> Bool {
+        guard let value else { return false }
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1",
+             "true",
+             "yes",
+             "y",
+             "on":
+            return true
+        default:
+            return false
+        }
     }
 
     static func migrateDefaultsIfNeeded(

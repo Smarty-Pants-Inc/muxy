@@ -8,7 +8,9 @@ CHANNEL=""
 INSTALL=0
 QUIT_RUNNING=0
 INSTALL_DIR="/Applications"
-SIGN_IDENTITY="-"
+SIGN_IDENTITY="${SMARTY_CODE_SIGN_IDENTITY:-}"
+SIGN_IDENTITY_EXPLICIT=0
+LOCAL_SIGN_IDENTITY="Smarty Code Local Development"
 SENTRY_DSN="${SENTRY_DSN:-}"
 STABLE_FEED_URL="${SMARTY_CODE_STABLE_FEED_URL:-}"
 BETA_FEED_URL="${SMARTY_CODE_BETA_FEED_URL:-}"
@@ -18,6 +20,9 @@ ARCH="$(uname -m)"
 usage() {
     cat <<USAGE
 Usage: $0 --channel <stable|dev> [--install] [--install-dir <dir>] [--quit-running] [--sign-identity <identity>] [--no-sign] [--version <x.y.z>] [--stable-feed-url <url>] [--beta-feed-url <url>] [--sentry-dsn <dsn>]
+
+Smarty Code app bundles are Apple Silicon-only. This script refuses to build
+Intel/x86_64, Rosetta, or universal app bundles.
 USAGE
 }
 
@@ -41,10 +46,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --sign-identity)
             SIGN_IDENTITY="$2"
+            SIGN_IDENTITY_EXPLICIT=1
             shift 2
             ;;
         --no-sign)
             SIGN_IDENTITY=""
+            SIGN_IDENTITY_EXPLICIT=1
             shift
             ;;
         --version)
@@ -80,9 +87,18 @@ if [[ "$CHANNEL" != "stable" && "$CHANNEL" != "dev" ]]; then
     exit 1
 fi
 
-if [[ "$ARCH" != "arm64" && "$ARCH" != "x86_64" ]]; then
-    echo "Unsupported architecture: $ARCH" >&2
+if [[ "$ARCH" != "arm64" ]]; then
+    echo "Smarty Code app builds are Apple Silicon-only; refusing to build for $ARCH." >&2
+    echo "Run this script from a native arm64 shell, not Rosetta, and do not build Intel/universal app bundles." >&2
     exit 1
+fi
+
+if [[ "$SIGN_IDENTITY_EXPLICIT" -eq 0 && -z "$SIGN_IDENTITY" ]]; then
+    if security find-identity -v -p codesigning 2>/dev/null | grep -F "\"$LOCAL_SIGN_IDENTITY\"" >/dev/null; then
+        SIGN_IDENTITY="$LOCAL_SIGN_IDENTITY"
+    else
+        SIGN_IDENTITY="-"
+    fi
 fi
 
 if [[ "$CHANNEL" == "stable" ]]; then
@@ -103,7 +119,7 @@ else
     SENTRY_ENVIRONMENT="smarty-code-dev"
 fi
 
-TRIPLE="${ARCH}-apple-macosx14.0"
+TRIPLE="arm64-apple-macosx14.0"
 BUILD_NUMBER="$(git -C "$PROJECT_ROOT" rev-list --count HEAD)"
 APP_BUNDLE="$BUILD_ROOT/$CHANNEL/${APP_NAME}.app"
 APP_PLIST="$APP_BUNDLE/Contents/Info.plist"
@@ -180,20 +196,65 @@ PY
     chmod +x "$script_path"
 }
 
+thin_macho_to_arm64() {
+    local binary="$1"
+    file "$binary" | grep -q "Mach-O" || return 0
+    local archs
+    archs="$(lipo -archs "$binary" 2>/dev/null || true)"
+    [[ "$archs" == *"arm64"* ]] || {
+        echo "Mach-O file lacks arm64 slice: $binary ($archs)" >&2
+        exit 1
+    }
+    [[ "$archs" == *"x86_64"* ]] || return 0
+
+    local tmp="${binary}.arm64"
+    local mode
+    mode="$(stat -f "%Lp" "$binary")"
+    lipo "$binary" -thin arm64 -output "$tmp"
+    chmod "$mode" "$tmp"
+    touch -r "$binary" "$tmp"
+    mv "$tmp" "$binary"
+}
+
+thin_bundle_to_arm64() {
+    while IFS= read -r -d '' binary; do
+        thin_macho_to_arm64 "$binary"
+    done < <(find "$APP_BUNDLE/Contents" -type f -print0)
+}
+
 safe_install() {
     local target="$INSTALL_DIR/${APP_NAME}.app"
+    local target_binary="$target/Contents/MacOS/$APP_NAME"
     mkdir -p "$INSTALL_DIR"
-    if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+
+    is_target_app_running() {
+        local args found=1
+        while IFS= read -r args; do
+            [[ "$args" == *"$target_binary"* ]] && found=0
+        done < <(ps -axo args=)
+        return "$found"
+    }
+
+    if is_target_app_running; then
         if [[ "$QUIT_RUNNING" -ne 1 ]]; then
             echo "$APP_NAME is running. Quit it first or pass --quit-running." >&2
             exit 1
         fi
-        osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+        osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 &
+        local quit_pid="$!"
+        for _ in {1..20}; do
+            kill -0 "$quit_pid" >/dev/null 2>&1 || break
+            sleep 0.25
+        done
+        if kill -0 "$quit_pid" >/dev/null 2>&1; then
+            kill -TERM "$quit_pid" >/dev/null 2>&1 || true
+        fi
+        wait "$quit_pid" >/dev/null 2>&1 || true
         for _ in {1..30}; do
-            pgrep -x "$APP_NAME" >/dev/null 2>&1 || break
+            is_target_app_running || break
             sleep 1
         done
-        if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+        if is_target_app_running; then
             echo "$APP_NAME did not quit; refusing to overwrite $target" >&2
             exit 1
         fi
@@ -208,6 +269,7 @@ safe_install() {
 }
 
 echo "==> Building $APP_NAME for $ARCH ($TRIPLE)"
+echo "==> Signing identity: ${SIGN_IDENTITY:-none}"
 cd "$PROJECT_ROOT"
 swift build -c release --triple "$TRIPLE"
 SPM_BUILD_DIR="$(swift build -c release --triple "$TRIPLE" --show-bin-path)"
@@ -254,7 +316,7 @@ if [[ -n "$STABLE_FEED_URL" || -n "$BETA_FEED_URL" ]]; then
     plist_set SUEnableAutomaticChecks bool true
 fi
 
-for key in NSAppleEventsUsageDescription NSBluetoothAlwaysUsageDescription NSCalendarsUsageDescription NSCameraUsageDescription NSContactsUsageDescription NSLocalNetworkUsageDescription NSLocationUsageDescription NSMicrophoneUsageDescription NSMotionUsageDescription NSPhotoLibraryUsageDescription NSRemindersUsageDescription NSSpeechRecognitionUsageDescription NSSystemAdministrationUsageDescription; do
+for key in NSAppleEventsUsageDescription NSAppDataUsageDescription NSBluetoothAlwaysUsageDescription NSCalendarsUsageDescription NSCameraUsageDescription NSContactsUsageDescription NSDesktopFolderUsageDescription NSDocumentsFolderUsageDescription NSDownloadsFolderUsageDescription NSLocalNetworkUsageDescription NSLocationUsageDescription NSMicrophoneUsageDescription NSMotionUsageDescription NSNetworkVolumesUsageDescription NSPhotoLibraryUsageDescription NSRemindersUsageDescription NSRemovableVolumesUsageDescription NSSpeechRecognitionUsageDescription NSSystemAdministrationUsageDescription; do
     replace_privacy_name "$key"
 done
 
@@ -269,6 +331,8 @@ cp -R "$SPARKLE_FRAMEWORK" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 while IFS= read -r -d '' cli_script; do
     patch_cli "$cli_script"
 done < <(find "$APP_BUNDLE/Contents/Resources" -type f -name muxy-cli -print0)
+
+thin_bundle_to_arm64
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
     SPARKLE_DIR="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"

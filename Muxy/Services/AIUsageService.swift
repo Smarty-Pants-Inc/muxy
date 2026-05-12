@@ -162,6 +162,7 @@ final class AIUsageService {
     static let shared = AIUsageService()
 
     private(set) var snapshots: [AIProviderUsageSnapshot] = []
+    private(set) var cliProxyUsageSnapshot: CLIProxyUsageSnapshot?
     private(set) var isRefreshing = false
     private(set) var lastRefreshDate: Date?
 
@@ -169,9 +170,20 @@ final class AIUsageService {
         AIUsageSettingsStore.autoRefreshInterval().timeInterval
     }
 
-    @ObservationIgnored private var refreshTask: Task<[AIProviderUsageSnapshot], Never>?
+    @ObservationIgnored private var refreshTask: Task<UsageFetchResult, Never>?
     @ObservationIgnored private var fetchedSnapshotsCache: [AIProviderUsageSnapshot] = []
     @ObservationIgnored private var previousSnapshotsCache: [AIProviderUsageSnapshot] = []
+
+    private struct UsageFetchResult {
+        let providerSnapshots: [AIProviderUsageSnapshot]
+        let cliProxySnapshot: CLIProxyUsageSnapshot?
+    }
+
+    private struct IndexedUsageFetchResult {
+        let index: Int
+        let providerSnapshot: AIProviderUsageSnapshot
+        let cliProxySnapshot: CLIProxyUsageSnapshot?
+    }
 
     private func usedPercent(for snapshot: AIProviderUsageSnapshot) -> Double? {
         guard case .available = snapshot.state else { return nil }
@@ -307,16 +319,20 @@ final class AIUsageService {
             refreshTask = nil
         }
 
-        let task = Task<[AIProviderUsageSnapshot], Never>.detached(priority: .userInitiated) {
+        let task = Task<UsageFetchResult, Never>.detached(priority: .userInitiated) {
             await AIUsageService.fetchSnapshots(for: enabledProviders)
         }
 
         refreshTask = task
-        let fetchedSnapshots = await task.value
+        let fetchResult = await task.value
+        let fetchedSnapshots = fetchResult.providerSnapshots
         AIUsageAutoTracking.autoTrackProvidersWithAvailableUsage(snapshots: fetchedSnapshots)
 
         previousSnapshotsCache = snapshots
         fetchedSnapshotsCache = fetchedSnapshots
+        if cliProxyUsageSnapshot != fetchResult.cliProxySnapshot {
+            cliProxyUsageSnapshot = fetchResult.cliProxySnapshot
+        }
         let composedSnapshots = composeSnapshots(
             catalogProviders: catalogProviders,
             fetchedSnapshots: fetchedSnapshots
@@ -328,20 +344,46 @@ final class AIUsageService {
         lastRefreshDate = Date()
     }
 
-    private static func fetchSnapshots(for providers: [any AIUsageProvider]) async -> [AIProviderUsageSnapshot] {
-        await withTaskGroup(of: (Int, AIProviderUsageSnapshot).self) { group in
+    private static func fetchSnapshots(for providers: [any AIUsageProvider]) async -> UsageFetchResult {
+        await withTaskGroup(of: IndexedUsageFetchResult.self) { group in
             for (index, provider) in providers.enumerated() {
                 group.addTask {
-                    await (index, provider.fetchUsageSnapshot())
+                    if let cliProxyProvider = provider as? CLIProxyUsageProvider {
+                        var cliProxySnapshot = await cliProxyProvider.fetchCLIProxyUsageSnapshot()
+                        if let registrySnapshot = try? AgentSessionRegistry(fileURL: AgentTreeRegistryLocation.defaultURL)
+                            .loadSnapshot(deriveFileRisks: false)
+                        {
+                            cliProxySnapshot = CLIProxyUsageAttributionEnricher.enrich(
+                                snapshot: cliProxySnapshot,
+                                registrySnapshot: registrySnapshot
+                            )
+                        }
+                        return IndexedUsageFetchResult(
+                            index: index,
+                            providerSnapshot: CLIProxyUsageProvider.providerSnapshot(from: cliProxySnapshot),
+                            cliProxySnapshot: cliProxySnapshot
+                        )
+                    }
+
+                    let snapshot = await provider.fetchUsageSnapshot()
+                    return IndexedUsageFetchResult(
+                        index: index,
+                        providerSnapshot: snapshot,
+                        cliProxySnapshot: nil
+                    )
                 }
             }
 
-            var indexed: [(Int, AIProviderUsageSnapshot)] = []
+            var indexed: [IndexedUsageFetchResult] = []
             indexed.reserveCapacity(providers.count)
-            for await pair in group {
-                indexed.append(pair)
+            for await result in group {
+                indexed.append(result)
             }
-            return indexed.sorted { $0.0 < $1.0 }.map(\.1)
+            let sorted = indexed.sorted { $0.index < $1.index }
+            return UsageFetchResult(
+                providerSnapshots: sorted.map(\.providerSnapshot),
+                cliProxySnapshot: sorted.compactMap(\.cliProxySnapshot).first
+            )
         }
     }
 

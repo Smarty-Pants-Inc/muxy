@@ -30,6 +30,12 @@ scripts/setup.sh
 3. `scripts/setup.sh` downloads the latest release and extracts it
 4. `Package.swift` links against `GhosttyKit.xcframework/macos-arm64_x86_64/libghostty.a`
 
+That universal GhosttyKit dependency is not the Smarty Code app build target.
+Smarty Code app bundles are Apple Silicon-only and must be built as `arm64`
+only, never Intel/`x86_64` or universal. The Smarty Code bundle script thins
+copied framework/helper binaries to arm64 before signing to avoid nested
+universal helpers being classified as Intel-capable app content.
+
 ## Syncing the fork
 
 The fork auto-syncs from upstream ghostty daily via the "Sync Upstream" workflow.

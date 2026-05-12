@@ -385,6 +385,12 @@ struct AgentSession: Identifiable, Codable, Equatable, Hashable {
         copy.riskFlags = AgentSessionRiskFlag.sorted(Set(riskFlags).union(flags))
         return copy
     }
+
+    func withProofStatus(_ proofStatus: AgentSessionProofStatus) -> Self {
+        var copy = self
+        copy.proofStatus = proofStatus
+        return copy
+    }
 }
 
 struct AgentSessionNode: Identifiable, Equatable, Hashable {
@@ -414,6 +420,7 @@ struct AgentSessionRegistrySnapshot: Equatable {
     let sessions: [AgentSession]
     let roots: [AgentSessionNode]
     let attributionLabelsBySessionID: [String: AgentUsageAttributionLabels]
+    let attributionLabelsByJoinKey: [String: AgentUsageAttributionLabels]
 
     func session(id: String) -> AgentSession? {
         sessions.first { $0.id == id }
@@ -425,5 +432,9 @@ struct AgentSessionRegistrySnapshot: Equatable {
 
     func attributionLabels(forID id: String) -> AgentUsageAttributionLabels? {
         attributionLabelsBySessionID[id]
+    }
+
+    func attributionLabels(matchingJoinKey key: String) -> AgentUsageAttributionLabels? {
+        attributionLabelsByJoinKey[key]
     }
 }

@@ -235,11 +235,12 @@ struct ExpandedProjectRow: View {
     private var worktreeList: some View {
         VStack(spacing: UIMetrics.scaled(1)) {
             ForEach(worktrees) { worktree in
-                ExpandedWorktreeRow(
+                ExpandedWorktreeCard(
                     projectID: project.id,
                     worktree: worktree,
                     selected: worktree.id == activeWorktreeID,
                     projectActive: isActive,
+                    showAgentTree: AgentTreeFeatureGate.isEnabled(),
                     onSelect: {
                         appState.selectWorktree(projectID: project.id, worktree: worktree)
                     },
@@ -420,11 +421,55 @@ struct ExpandedProjectRow: View {
     }
 }
 
+private struct ExpandedWorktreeCard: View {
+    let projectID: UUID
+    let worktree: Worktree
+    let selected: Bool
+    let projectActive: Bool
+    let showAgentTree: Bool
+    let onSelect: () -> Void
+    let onRename: (String) -> Void
+    let onRemove: (() -> Void)?
+
+    @State private var hovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ExpandedWorktreeRow(
+                projectID: projectID,
+                worktree: worktree,
+                selected: selected,
+                projectActive: projectActive,
+                usesOwnBackground: false,
+                onSelect: onSelect,
+                onRename: onRename,
+                onRemove: onRemove
+            )
+
+            if showAgentTree {
+                AgentTreeView(worktree: worktree)
+            }
+        }
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: UIMetrics.radiusMD))
+        .contentShape(RoundedRectangle(cornerRadius: UIMetrics.radiusMD))
+        .onHover { hovered = $0 }
+    }
+
+    private var activeStyle: Bool { selected && projectActive }
+
+    private var cardBackground: AnyShapeStyle {
+        if activeStyle { return AnyShapeStyle(MuxyTheme.accentSoft) }
+        if hovered { return AnyShapeStyle(MuxyTheme.hover) }
+        return AnyShapeStyle(Color.clear)
+    }
+}
+
 private struct ExpandedWorktreeRow: View {
     let projectID: UUID
     let worktree: Worktree
     let selected: Bool
     let projectActive: Bool
+    var usesOwnBackground = true
     let onSelect: () -> Void
     let onRename: (String) -> Void
     let onRemove: (() -> Void)?
@@ -486,7 +531,7 @@ private struct ExpandedWorktreeRow: View {
         }
         .padding(.horizontal, UIMetrics.spacing4)
         .padding(.vertical, UIMetrics.scaled(7))
-        .background(rowBackground, in: RoundedRectangle(cornerRadius: UIMetrics.radiusMD))
+        .background(usesOwnBackground ? rowBackground : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: UIMetrics.radiusMD))
         .contentShape(RoundedRectangle(cornerRadius: UIMetrics.radiusMD))
         .onHover { hovered = $0 }
         .onTapGesture {

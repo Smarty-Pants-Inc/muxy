@@ -116,7 +116,8 @@ struct MainWindow: View {
     @State private var sidebarExpanded = UserDefaults.standard.bool(forKey: "muxy.sidebarExpanded")
     @AppStorage(SidebarCollapsedStyle.storageKey) private var sidebarCollapsedStyleRaw = SidebarCollapsedStyle.defaultValue.rawValue
     @AppStorage(SidebarExpandedStyle.storageKey) private var sidebarExpandedStyleRaw = SidebarExpandedStyle.defaultValue.rawValue
-    @AppStorage("muxy.notifications.toastPosition") private var toastPositionRaw = ToastPosition.topCenter.rawValue
+    @AppStorage(NotificationSettings.Key.toastPosition)
+    private var toastPositionRaw = NotificationSettings.Default.toastPosition.rawValue
     @MainActor private var trafficLightWidth: CGFloat { UIMetrics.scaled(75) }
 
     var body: some View {
@@ -130,24 +131,38 @@ struct MainWindow: View {
         }
         .environment(\.overlayActive, showQuickOpen || showFindInFiles || showWorktreeSwitcher || overlayAnimatingOut)
         .overlay(alignment: toastAlignment) {
-            if let toast = ToastState.shared.message {
-                HStack(spacing: UIMetrics.spacing3) {
+            if let toast = ToastState.shared.content {
+                HStack(alignment: toast.body == nil ? .center : .top, spacing: UIMetrics.spacing3) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: UIMetrics.fontBody, weight: .semibold))
                         .foregroundStyle(MuxyTheme.diffAddFg)
-                    Text(toast)
-                        .font(.system(size: UIMetrics.fontBody, weight: .medium))
-                        .foregroundStyle(MuxyTheme.fg)
+                    VStack(alignment: .leading, spacing: UIMetrics.spacing1) {
+                        Text(toast.title)
+                            .font(.system(size: UIMetrics.fontBody, weight: .medium))
+                            .foregroundStyle(MuxyTheme.fg)
+                            .lineLimit(1)
+                        if let body = toast.body {
+                            Text(body)
+                                .font(.system(size: UIMetrics.fontFootnote))
+                                .foregroundStyle(MuxyTheme.fgMuted)
+                                .lineLimit(2)
+                        }
+                    }
                 }
                 .padding(.horizontal, UIMetrics.scaled(14))
                 .padding(.vertical, UIMetrics.spacing4)
+                .frame(maxWidth: UIMetrics.scaled(360), alignment: .leading)
                 .background(MuxyTheme.bg, in: Capsule())
                 .overlay(Capsule().stroke(MuxyTheme.border, lineWidth: 1))
+                .contentShape(Capsule())
                 .padding(toastEdgePadding)
                 .transition(.move(edge: toastTransitionEdge).combined(with: .opacity))
-                .allowsHitTesting(false)
-                .accessibilityLabel(toast)
-                .accessibilityAddTraits(.isStaticText)
+                .allowsHitTesting(toast.isActionable)
+                .onTapGesture {
+                    ToastState.shared.performAction()
+                }
+                .accessibilityLabel(toast.accessibilityLabel)
+                .accessibilityAddTraits(toast.isActionable ? .isButton : .isStaticText)
             }
         }
         .overlay {
@@ -667,7 +682,7 @@ struct MainWindow: View {
     }
 
     private var toastPosition: ToastPosition {
-        ToastPosition(rawValue: toastPositionRaw) ?? .topCenter
+        NotificationSettings.toastPosition(rawValue: toastPositionRaw)
     }
 
     private var toastAlignment: Alignment {

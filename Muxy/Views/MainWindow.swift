@@ -117,6 +117,9 @@ struct MainWindow: View {
     @AppStorage(SidebarCollapsedStyle.storageKey) private var sidebarCollapsedStyleRaw = SidebarCollapsedStyle.defaultValue.rawValue
     @AppStorage(SidebarExpandedStyle.storageKey) private var sidebarExpandedStyleRaw = SidebarExpandedStyle.defaultValue.rawValue
     @AppStorage("muxy.notifications.toastPosition") private var toastPositionRaw = ToastPosition.topCenter.rawValue
+    @AppStorage(RecordingPreferences.autoSendKey) private var recordingAutoSend = RecordingPreferences.defaultAutoSend
+    @AppStorage(RecordingPreferences.languageKey) private var recordingLanguage = RecordingPreferences.defaultLanguage
+    @State private var voiceRecording = VoiceRecordingState.shared
     @MainActor private var trafficLightWidth: CGFloat { UIMetrics.scaled(75) }
 
     var body: some View {
@@ -129,6 +132,13 @@ struct MainWindow: View {
             titleBarNavigationOverlay
         }
         .environment(\.overlayActive, showQuickOpen || showFindInFiles || showWorktreeSwitcher || overlayAnimatingOut)
+        .overlay(alignment: .bottom) {
+            if voiceRecording.isPanelVisible {
+                VoiceRecordingPanel(state: voiceRecording, autoSend: recordingAutoSend)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: voiceRecording.isPanelVisible)
         .overlay(alignment: toastAlignment) {
             if let toast = ToastState.shared.message {
                 HStack(spacing: UIMetrics.spacing3) {
@@ -239,7 +249,8 @@ struct MainWindow: View {
         .modifier(SidePanelNotificationListeners(
             onToggleAttachedVCS: { toggleAttachedVCSPanel() },
             onToggleFileTree: { toggleFileTreePanel() },
-            onToggleRichInput: { toggleRichInputPanel() }
+            onToggleRichInput: { toggleRichInputPanel() },
+            onToggleVoiceRecording: { _ = openVoiceRecorder() }
         ))
         .onChange(of: vcsPruneSignature) {
             pruneFileTreeStates()
@@ -804,9 +815,21 @@ struct MainWindow: View {
     }
 
     private func handleShortcutAction(_ action: ShortcutAction) -> Bool {
-        shortcutDispatcher.perform(action, activeProject: activeProject) { project in
+        if action == .toggleVoiceRecording {
+            return openVoiceRecorder()
+        }
+        return shortcutDispatcher.perform(action, activeProject: activeProject) { project in
             openVCS(for: project)
         }
+    }
+
+    private func openVoiceRecorder() -> Bool {
+        if voiceRecording.isPanelVisible {
+            voiceRecording.cancel()
+            return true
+        }
+        voiceRecording.present(languageIdentifier: recordingLanguage)
+        return true
     }
 
     private func handleCommandShortcut(_ shortcut: CommandShortcut) -> Bool {
@@ -1527,6 +1550,7 @@ private struct SidePanelNotificationListeners: ViewModifier {
     let onToggleAttachedVCS: () -> Void
     let onToggleFileTree: () -> Void
     let onToggleRichInput: () -> Void
+    let onToggleVoiceRecording: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -1538,6 +1562,9 @@ private struct SidePanelNotificationListeners: ViewModifier {
             }
             .onReceive(NotificationCenter.default.publisher(for: .toggleRichInput)) { _ in
                 onToggleRichInput()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleVoiceRecording)) { _ in
+                onToggleVoiceRecording()
             }
     }
 }

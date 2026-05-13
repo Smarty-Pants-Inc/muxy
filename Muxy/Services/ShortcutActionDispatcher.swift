@@ -168,7 +168,14 @@ struct ShortcutActionDispatcher {
             guard appState.navigation.canGoForward else { return false }
             appState.goForward()
             return true
-        case .selectTab1,
+        case .toggleMaximizePane:
+            guard let projectID = appState.activeProjectID,
+                  let areaID = appState.focusedAreaID(for: projectID)
+            else { return false }
+            appState.toggleMaximize(areaID: areaID, for: projectID)
+            return true
+        case .toggleVoiceRecording,
+             .selectTab1,
              .selectTab2,
              .selectTab3,
              .selectTab4,

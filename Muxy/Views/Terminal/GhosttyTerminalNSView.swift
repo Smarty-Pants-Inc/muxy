@@ -408,10 +408,8 @@ final class GhosttyTerminalNSView: NSView {
 
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
-        if result {
-            if let surface {
-                ghostty_surface_set_focus(surface, false)
-            }
+        if result, let surface {
+            ghostty_surface_set_focus(surface, false)
         }
         return result
     }

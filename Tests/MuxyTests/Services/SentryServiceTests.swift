@@ -1,4 +1,5 @@
 import Foundation
+import Sentry
 import Testing
 
 @testable import Muxy
@@ -97,6 +98,48 @@ struct SentryServiceTests {
         #expect(!service.needsPrompt)
     }
 
+    @Test("isModalAlertHang ignores non-hang events")
+    func isModalAlertHangIgnoresNonHang() {
+        let event = makeEvent(type: "NSException", frames: ["runModal"])
+        #expect(!SentryService.isModalAlertHang(event))
+    }
+
+    @Test("isModalAlertHang ignores hangs without a modal frame")
+    func isModalAlertHangIgnoresUnrelatedHang() {
+        let event = makeEvent(
+            type: "App Hanging",
+            frames: ["mach_msg2_trap", "SecTrustEvaluateIfNecessary"]
+        )
+        #expect(!SentryService.isModalAlertHang(event))
+    }
+
+    @Test("isModalAlertHang matches NSAlert runModal frames")
+    func isModalAlertHangMatchesAlertRunModal() {
+        let event = makeEvent(
+            type: "App Hanging",
+            frames: ["objc_msgSend", "-[NSApplication runModalForWindow:]", "-[NSAlert runModal]"]
+        )
+        #expect(SentryService.isModalAlertHang(event))
+    }
+
+    @Test("isModalAlertHang matches NSOpenPanel frames")
+    func isModalAlertHangMatchesOpenPanel() {
+        let event = makeEvent(
+            type: "App Hanging",
+            frames: ["-[NSOpenPanel runModal]"]
+        )
+        #expect(SentryService.isModalAlertHang(event))
+    }
+
+    @Test("isModalAlertHang matches modal loop frames")
+    func isModalAlertHangMatchesDoModalLoop() {
+        let event = makeEvent(
+            type: "App Hanging",
+            frames: ["-[NSApplication _doModalLoop:peek:]"]
+        )
+        #expect(SentryService.isModalAlertHang(event))
+    }
+
     @Test("environment is derived from the injected defaults' update channel")
     func startContextEnvironmentReflectsChannel() {
         var capturedEnvironments: [String] = []
@@ -112,7 +155,6 @@ struct SentryServiceTests {
         #expect(capturedEnvironments == ["beta"])
     }
 
-
     @Test("explicit app environment overrides update channel")
     func explicitAppEnvironmentWins() {
         let suiteName = "muxy.tests.sentry.\(UUID().uuidString)"
@@ -124,6 +166,20 @@ struct SentryServiceTests {
         defaults.set(UpdateChannel.beta.rawValue, forKey: UpdateChannel.storageKey)
 
         #expect(SentryService.environment(from: defaults, appEnvironment: "smarty-code-dev") == "smarty-code-dev")
+    }
+
+    private func makeEvent(type: String, frames functionNames: [String]) -> Event {
+        let frames: [Frame] = functionNames.map { name in
+            let frame = Frame()
+            frame.function = name
+            return frame
+        }
+        let stacktrace = SentryStacktrace(frames: frames, registers: [:])
+        let exception = Exception(value: "App hanging for at least 2000 ms.", type: type)
+        exception.stacktrace = stacktrace
+        let event = Event()
+        event.exceptions = [exception]
+        return event
     }
 
     private func makeService(

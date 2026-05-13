@@ -92,6 +92,7 @@ final class VCSTabState {
     var isCommitting = false
     var isPushing = false
     var isPulling = false
+    var isGeneratingCommitMessage = false
     var isSwitchingBranch = false
     var isLoadingBranches = false
     var statusMessage: String?
@@ -182,12 +183,14 @@ final class VCSTabState {
     @ObservationIgnored private var commitLogTask: Task<Void, Never>?
     @ObservationIgnored private var prListTask: Task<Void, Never>?
     @ObservationIgnored private var prAutoSyncTask: Task<Void, Never>?
+    @ObservationIgnored private var aiGenerationTask: Task<Void, Never>?
     @ObservationIgnored private var watcher: FileSystemWatcher?
     @ObservationIgnored nonisolated(unsafe) private var remoteChangeObserver: NSObjectProtocol?
     @ObservationIgnored private var isRefreshing = false
     @ObservationIgnored private var pendingRefresh = false
     @ObservationIgnored private var refreshAndWaitTask: Task<Void, Never>?
     @ObservationIgnored private var lastFetchedHeadSha: String?
+    @ObservationIgnored private var pendingPRFetchBranch: String?
     private(set) var hasCompletedInitialLoad = false
     @ObservationIgnored private static let commitsPerPage = 100
 
@@ -295,7 +298,6 @@ final class VCSTabState {
         let refreshSignpost = GitSignpost.begin("performRefresh", incremental ? "incremental" : "full")
 
         branchTask?.cancel()
-        prInfoTask?.cancel()
         let shouldForcePR = forcePRFetch || !incremental
         if shouldForcePR {
             isRefreshingPullRequest = true
@@ -325,6 +327,8 @@ final class VCSTabState {
                 let neverFetched = !hasFetchedPullRequestInfo
                 if shouldForcePR || branchChanged || headChanged || neverFetched {
                     fetchPRInfo(branch: branch, headSha: head, forceFresh: shouldForcePR)
+                } else if isRefreshingPullRequest {
+                    isRefreshingPullRequest = false
                 }
 
                 let counts = await git.aheadBehind(repoPath: projectPath, branch: branch)
@@ -332,11 +336,13 @@ final class VCSTabState {
                 aheadBehind = counts
             } catch {
                 guard !Task.isCancelled else { return }
-                branchName = nil
-                pullRequestInfo = nil
-                hasFetchedPullRequestInfo = false
-                lastFetchedHeadSha = nil
-                aheadBehind = .init(ahead: 0, behind: 0, hasUpstream: false)
+                if error is GitRepositoryService.GitError {
+                    branchName = nil
+                    pullRequestInfo = nil
+                    hasFetchedPullRequestInfo = false
+                    lastFetchedHeadSha = nil
+                    aheadBehind = .init(ahead: 0, behind: 0, hasUpstream: false)
+                }
                 isRefreshingPullRequest = false
             }
         }
@@ -396,7 +402,7 @@ final class VCSTabState {
                 isLoadingFiles = false
                 hasCompletedInitialLoad = true
 
-                for path in expandedFilePaths where validPaths.contains(path) {
+                for path in expandedFilePaths where validPaths.contains(path) && changedPaths.contains(path) {
                     loadDiff(filePath: path, forceFull: false)
                 }
 
@@ -651,12 +657,48 @@ final class VCSTabState {
                 commitMessage = ""
                 commits = []
                 showStatus("Committed \(hash)", isError: false)
-                performRefresh(incremental: false)
+                performRefresh(incremental: false, forcePRFetch: true)
             } catch {
                 guard !Task.isCancelled else { return }
                 showStatus(errorText(error), isError: true)
             }
         }
+    }
+
+    func generateCommitMessageWithAI() {
+        guard hasAnyChanges else {
+            showStatus("No changes to summarize.", isError: true)
+            return
+        }
+        if isGeneratingCommitMessage { return }
+        isGeneratingCommitMessage = true
+        let path = projectPath
+        let branch = branchName
+        aiGenerationTask?.cancel()
+        aiGenerationTask = Task { [weak self] in
+            do {
+                let message = try await AIAssistantService.generateCommitMessage(
+                    repoPath: path,
+                    branch: branch
+                )
+                guard let self, !Task.isCancelled else { return }
+                commitMessage = message
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                showStatus(errorText(error), isError: true)
+            }
+            guard let self else { return }
+            isGeneratingCommitMessage = false
+            aiGenerationTask = nil
+        }
+    }
+
+    func cancelCommitMessageGeneration() {
+        aiGenerationTask?.cancel()
+        aiGenerationTask = nil
+        isGeneratingCommitMessage = false
     }
 
     func push() {
@@ -706,7 +748,7 @@ final class VCSTabState {
                 try await git.pull(repoPath: projectPath)
                 guard !Task.isCancelled else { return }
                 showStatus("Pulled", isError: false)
-                performRefresh(incremental: false)
+                performRefresh(incremental: false, forcePRFetch: true)
             } catch {
                 guard !Task.isCancelled else { return }
                 showStatus(errorText(error), isError: true)
@@ -760,7 +802,7 @@ final class VCSTabState {
                 guard !Task.isCancelled else { return }
                 commits = []
                 showStatus("Cherry-picked \(String(hash.prefix(7)))", isError: false)
-                performRefresh(incremental: false)
+                performRefresh(incremental: false, forcePRFetch: true)
             } catch {
                 guard !Task.isCancelled else { return }
                 showStatus(errorText(error), isError: true)
@@ -776,7 +818,7 @@ final class VCSTabState {
                 guard !Task.isCancelled else { return }
                 commitMessage = "Revert: \(subject)"
                 showStatus("Reverted \(String(hash.prefix(7)))", isError: false)
-                performRefresh(incremental: false)
+                performRefresh(incremental: false, forcePRFetch: true)
             } catch {
                 guard !Task.isCancelled else { return }
                 showStatus(errorText(error), isError: true)
@@ -848,15 +890,24 @@ final class VCSTabState {
     }
 
     private func fetchPRInfo(branch: String, headSha: String?, forceFresh: Bool) {
-        prInfoTask?.cancel()
+        if !forceFresh, let pendingBranch = pendingPRFetchBranch, pendingBranch == branch {
+            return
+        }
+        if forceFresh {
+            prInfoTask?.cancel()
+        }
+        pendingPRFetchBranch = branch
         prInfoTask = Task { [weak self] in
             guard let self else { return }
-            defer { if forceFresh { isRefreshingPullRequest = false } }
+            defer {
+                self.isRefreshingPullRequest = false
+                self.pendingPRFetchBranch = nil
+            }
             async let ghInstalledValue = git.isGhInstalled()
             async let defaultBranchValue = git.defaultBranch(repoPath: projectPath)
             let ghInstalled = await ghInstalledValue
             let defaultBranchResult = await defaultBranchValue
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, branchName == branch else { return }
             isGhInstalled = ghInstalled
             defaultBranch = defaultBranchResult
 
@@ -868,21 +919,31 @@ final class VCSTabState {
             }
 
             guard let headSha else {
-                pullRequestInfo = nil
                 hasFetchedPullRequestInfo = true
                 return
             }
 
-            let prInfo = await git.cachedPullRequestInfo(
+            let result = await git.cachedPullRequestInfo(
                 repoPath: projectPath,
                 branch: branch,
                 headSha: headSha,
                 forceFresh: forceFresh
             )
-            guard !Task.isCancelled else { return }
-            pullRequestInfo = prInfo
-            hasFetchedPullRequestInfo = true
-            lastFetchedHeadSha = headSha
+            guard !Task.isCancelled, branchName == branch else { return }
+            switch result {
+            case let .found(info):
+                pullRequestInfo = info
+                hasFetchedPullRequestInfo = true
+                lastFetchedHeadSha = headSha
+            case .noPR:
+                pullRequestInfo = nil
+                hasFetchedPullRequestInfo = true
+                lastFetchedHeadSha = headSha
+            case .failed:
+                if !hasFetchedPullRequestInfo {
+                    hasFetchedPullRequestInfo = true
+                }
+            }
         }
     }
 
@@ -905,15 +966,16 @@ final class VCSTabState {
 
     func refreshPullRequest() {
         guard let branch = branchName else { return }
-        guard !isRefreshingPullRequest else { return }
+        if isRefreshingPullRequest { return }
         isRefreshingPullRequest = true
         Task { [weak self] in
             guard let self else { return }
             let head = await git.headSha(repoPath: projectPath)
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled, branchName == branch else {
                 isRefreshingPullRequest = false
                 return
             }
+            pendingPRFetchBranch = nil
             fetchPRInfo(branch: branch, headSha: head, forceFresh: true)
         }
     }
